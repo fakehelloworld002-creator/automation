@@ -1887,31 +1887,48 @@ async function waitForPageReady(timeout: number = 30000): Promise<boolean> {
     if (!state.page || state.page.isClosed()) return false;
 
     const startTime = Date.now();
-    let lastActivityTime = Date.now();
     
     try {
-        // Strategy 1: Wait for main page navigation
+        // Strategy 1: Wait for main page navigation (5 seconds max)
         try {
-            await state.page.waitForLoadState('networkidle', { timeout: Math.min(timeout, 15000) }).catch(() => {});
+            await Promise.race([
+                state.page.waitForLoadState('networkidle', { timeout: 5000 }),
+                new Promise(resolve => setTimeout(resolve, 5000))
+            ]).catch(() => {});
         } catch (e) {
             // Continue with other checks
         }
 
-        // Strategy 2: Wait for all frames to be ready
+        // Check elapsed time
+        if (Date.now() - startTime > timeout) return false;
+
+        // Strategy 2: Quick DOM readiness check (3 seconds max)
         try {
-            const frames = state.page.frames();
-            for (const frame of frames) {
-                try {
-                    await frame.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
-                } catch (e) {
-                    // Frame might be cross-origin, continue
-                }
-            }
+            await Promise.race([
+                state.page.evaluate(() => {
+                    return new Promise<void>((resolve) => {
+                        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                            resolve();
+                        } else {
+                            const handler = () => {
+                                document.removeEventListener('DOMContentLoaded', handler);
+                                resolve();
+                            };
+                            document.addEventListener('DOMContentLoaded', handler);
+                            setTimeout(() => resolve(), 3000);
+                        }
+                    });
+                }),
+                new Promise(resolve => setTimeout(resolve, 3000))
+            ]).catch(() => {});
         } catch (e) {
-            // Frame checks completed
+            // DOM check skipped
         }
 
-        // Strategy 3: Wait for common loading indicators to disappear
+        // Check elapsed time
+        if (Date.now() - startTime > timeout) return false;
+
+        // Strategy 3: Wait for loading indicators to disappear (2 seconds max)
         try {
             const loadingIndicators = await state.page.evaluate(() => {
                 const indicators = document.querySelectorAll(
@@ -1919,144 +1936,54 @@ async function waitForPageReady(timeout: number = 30000): Promise<boolean> {
                     '[data-testid*="loading"], [aria-busy="true"], .loader, .load, .progress'
                 );
                 return indicators.length;
-            });
+            }).catch(() => 0);
 
             if (loadingIndicators > 0) {
-                await state.page.evaluate(() => {
-                    return new Promise<boolean>((resolve) => {
-                        const checkIndicators = () => {
-                            const indicators = document.querySelectorAll(
-                                '[class*="loading"], [class*="spinner"], [id*="loading"], [id*="spinner"], ' +
-                                '[data-testid*="loading"], [aria-busy="true"], .loader, .load, .progress'
-                            );
-                            return indicators.length === 0;
-                        };
+                await Promise.race([
+                    state.page.evaluate(() => {
+                        return new Promise<boolean>((resolve) => {
+                            const checkIndicators = () => {
+                                const indicators = document.querySelectorAll(
+                                    '[class*="loading"], [class*="spinner"], [id*="loading"], [id*="spinner"], ' +
+                                    '[data-testid*="loading"], [aria-busy="true"], .loader, .load, .progress'
+                                );
+                                return indicators.length === 0;
+                            };
 
-                        if (checkIndicators()) {
-                            resolve(true);
-                            return;
-                        }
-
-                        const observer = new MutationObserver(() => {
                             if (checkIndicators()) {
-                                observer.disconnect();
                                 resolve(true);
+                                return;
                             }
-                        });
 
-                        observer.observe(document.body, {
-                            childList: true,
-                            subtree: true,
-                            attributes: true
-                        });
+                            const observer = new MutationObserver(() => {
+                                if (checkIndicators()) {
+                                    observer.disconnect();
+                                    resolve(true);
+                                }
+                            });
 
-                        // Timeout after 8 seconds
-                        setTimeout(() => {
-                            observer.disconnect();
-                            resolve(false);
-                        }, 8000);
-                    });
-                });
+                            observer.observe(document.body, {
+                                childList: true,
+                                subtree: true,
+                                attributes: true
+                            });
+
+                            // Timeout after 2 seconds
+                            setTimeout(() => {
+                                observer.disconnect();
+                                resolve(false);
+                            }, 2000);
+                        });
+                    }),
+                    new Promise(resolve => setTimeout(resolve, 2000))
+                ]).catch(() => {});
             }
         } catch (e) {
             // Loading indicator check skipped
         }
 
-        // Strategy 4: Wait for DOM to be interactive
-        try {
-            await state.page.evaluate(() => {
-                return new Promise<void>((resolve) => {
-                    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                        resolve();
-                    } else {
-                        document.addEventListener('DOMContentLoaded', () => resolve());
-                        setTimeout(() => resolve(), 3000);
-                    }
-                });
-            });
-        } catch (e) {
-            // DOM check skipped
-        }
-
-        // Strategy 5: Wait for network to settle (no requests for 2 seconds)
-        try {
-            let pendingRequests = true;
-            let settledCount = 0;
-
-            while (pendingRequests && Date.now() - startTime < timeout) {
-                try {
-                    const requestCount = await state.page.evaluate(() => {
-                        return (performance as any).getEntriesByType?.('resource')?.length || 0;
-                    });
-
-                    if (requestCount === 0 || settledCount > 3) {
-                        pendingRequests = false;
-                    } else {
-                        settledCount++;
-                        await state.page.waitForTimeout(500);
-                    }
-                } catch (e) {
-                    pendingRequests = false;
-                }
-            }
-        } catch (e) {
-            // Network settle check skipped
-        }
-
-        // Strategy 6: Wait for all AJAX/Fetch requests to complete
-        try {
-            await state.page.evaluate(() => {
-                return new Promise<void>((resolve) => {
-                    let requestCount = 0;
-                    const originalFetch = window.fetch;
-                    const originalXHR = (window as any).XMLHttpRequest;
-
-                    // Track fetch requests
-                    (window as any).fetch = function(...args: any[]) {
-                        requestCount++;
-                        return originalFetch.apply(this, args).finally(() => {
-                            requestCount--;
-                            if (requestCount === 0) {
-                                setTimeout(() => resolve(), 500);
-                            }
-                        });
-                    };
-
-                    // Check if requests are already in flight
-                    setTimeout(() => {
-                        if (requestCount === 0) {
-                            resolve();
-                        }
-                    }, 500);
-
-                    // Timeout after 8 seconds
-                    setTimeout(() => resolve(), 8000);
-                });
-            }).catch(() => {});
-        } catch (e) {
-            // AJAX check skipped
-        }
-
-        // Strategy 7: Final stability check
-        try {
-            const isStable = await state.page.evaluate(() => {
-                // Check if page has interactive elements visible
-                const interactiveElements = document.querySelectorAll(
-                    'button, input, a, select, textarea, [role="button"]'
-                );
-                return interactiveElements.length > 0 && document.readyState !== 'loading';
-            });
-        } catch (e) {
-            // Stability check skipped
-        }
-
-        const totalWaitTime = Date.now() - startTime;
-        if (totalWaitTime > 5000) {
-            log(`[Page Ready] Wait time: ${totalWaitTime}ms`);
-        }
         return true;
-
-    } catch (error: any) {
+    } catch (e) {
         return false;
     }
 }
@@ -2066,8 +1993,11 @@ async function waitForPageReady(timeout: number = 30000): Promise<boolean> {
  */
 async function executeWithPageReady(actionFn: () => Promise<any>, stepName: string): Promise<any> {
     try {
-        // Always wait for page readiness
-        const isReady = await waitForPageReady(30000);
+        // Wait for page readiness with shorter timeout (10 seconds) - don't block indefinitely
+        // Even if page isn't "ready", we should still try the action
+        await waitForPageReady(10000).catch(() => {
+            log(`[${stepName}] Page readiness check timed out, proceeding anyway...`);
+        });
 
         // Add small delay to ensure rendering
         await state.page?.waitForTimeout(300);
