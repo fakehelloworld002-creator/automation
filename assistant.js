@@ -1398,7 +1398,7 @@ const htmlUI = `
         <div class="controls">
             <button id="startBtn" class="btn-primary" onclick="startAutomation()">START</button>
             <button id="pauseBtn" class="btn-secondary btn-pause" onclick="pauseAutomation()" disabled>PAUSE</button>
-            <button id="resumeBtn" class="btn-secondary" onclick="resumeAutomation()" disabled style="display:none; background: #4caf50; color: white;">RESUME</button>
+            <button id="resumeBtn" class="btn-secondary" onclick="resumeAutomation()" style="display:none; background: #4caf50; color: white;">RESUME</button>
             <button id="stopBtn" class="btn-secondary btn-stop" onclick="stopAutomation()" disabled>STOP</button>
             <button id="elementsBtn" class="btn-secondary btn-elements" onclick="showElements()" disabled>Show Elements</button>
         </div>
