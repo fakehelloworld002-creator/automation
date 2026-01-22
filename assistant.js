@@ -365,6 +365,140 @@ async function scrollToElementByText(text) {
 }
 /* ============== ENHANCED FRAME & DYNAMIC ELEMENT HANDLING ============== */
 /**
+ * Deep DOM search across the main page - looks in all possible places for target elements
+ * This is a fallback when frame-based search doesn't find elements
+ */
+async function deepDOMSearch(target, action, fillValue) {
+    if (!state.page || state.page.isClosed())
+        return false;
+    try {
+        log(`\n========== DEEP DOM SEARCH START ==========`);
+        log(`Target: "${target}" | Action: ${action}`);
+        if (action === 'click') {
+            // Deep search for clickable elements
+            const found = await state.page.evaluate((searchText) => {
+                // Search strategy: look in order of specificity
+                // 1. Buttons with exact or partial text match
+                const buttons = Array.from(document.querySelectorAll('button, [role="button"], [role="tab"], a'));
+                for (const btn of buttons) {
+                    const text = btn.textContent?.toLowerCase() || '';
+                    const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
+                    const title = btn.getAttribute('title')?.toLowerCase() || '';
+                    if (text.includes(searchText.toLowerCase()) ||
+                        ariaLabel.includes(searchText.toLowerCase()) ||
+                        title.includes(searchText.toLowerCase())) {
+                        const rect = btn.getBoundingClientRect();
+                        const style = window.getComputedStyle(btn);
+                        if (rect.width > 0 && rect.height > 0 &&
+                            style.display !== 'none' &&
+                            style.visibility !== 'hidden') {
+                            btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            setTimeout(() => {
+                                btn.click();
+                            }, 300);
+                            return true;
+                        }
+                    }
+                }
+                // 2. Divs/spans with onclick
+                const divs = Array.from(document.querySelectorAll('div, span, p'));
+                for (const div of divs) {
+                    const text = div.textContent?.toLowerCase() || '';
+                    if (text.includes(searchText.toLowerCase()) && div.onclick) {
+                        const rect = div.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            div.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            setTimeout(() => {
+                                div.click();
+                            }, 300);
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }, target);
+            if (found) {
+                log(`✓ Deep DOM search found and clicked element`);
+                await state.page.waitForTimeout(500);
+                return true;
+            }
+        }
+        else if (action === 'fill' && fillValue) {
+            // Deep search for input fields
+            const filled = await state.page.evaluate(({ searchText, fillValue: value }) => {
+                // Find all inputs and textareas
+                const inputs = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'));
+                for (const inp of inputs) {
+                    const placeholder = inp.placeholder?.toLowerCase() || '';
+                    const ariaLabel = inp.getAttribute('aria-label')?.toLowerCase() || '';
+                    const name = inp.name?.toLowerCase() || '';
+                    const id = inp.id?.toLowerCase() || '';
+                    const allText = `${placeholder} ${ariaLabel} ${name} ${id}`;
+                    if (allText.includes(searchText.toLowerCase())) {
+                        const style = window.getComputedStyle(inp);
+                        const rect = inp.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0 &&
+                            style.display !== 'none' &&
+                            style.visibility !== 'hidden' &&
+                            !inp.disabled) {
+                            inp.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            setTimeout(() => {
+                                inp.value = value;
+                                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                                inp.dispatchEvent(new Event('change', { bubbles: true }));
+                            }, 300);
+                            return true;
+                        }
+                    }
+                }
+                // Try by associated label text
+                const labels = Array.from(document.querySelectorAll('label'));
+                for (const label of labels) {
+                    const labelText = label.textContent?.toLowerCase() || '';
+                    if (labelText.includes(searchText.toLowerCase())) {
+                        const forAttr = label.getAttribute('for');
+                        let input = null;
+                        if (forAttr) {
+                            input = document.getElementById(forAttr);
+                        }
+                        else {
+                            input = label.querySelector('input, textarea');
+                        }
+                        if (input) {
+                            const style = window.getComputedStyle(input);
+                            const rect = input.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0 &&
+                                style.display !== 'none' &&
+                                style.visibility !== 'hidden' &&
+                                !input.disabled) {
+                                input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                setTimeout(() => {
+                                    input.value = value;
+                                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                                }, 300);
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+            }, { searchText: target, fillValue });
+            if (filled) {
+                log(`✓ Deep DOM search found and filled element`);
+                await state.page.waitForTimeout(500);
+                return true;
+            }
+        }
+        log(`========== DEEP DOM SEARCH - NO MATCH FOUND ==========\n`);
+        return false;
+    }
+    catch (error) {
+        log(`Deep DOM search error: ${error.message}`);
+        return false;
+    }
+}
+/**
  * Search and interact with elements across ALL frames (including cross-origin and nested)
  * Using Playwright's Frame API which bypasses CORS restrictions
  */
@@ -372,82 +506,182 @@ async function searchInAllFrames(target, action, fillValue) {
     if (!state.page || state.page.isClosed())
         return false;
     try {
-        log(`[Advanced Frame Search] Searching all frames (including cross-origin & nested) for: ${target}`);
+        log(`\n========== COMPREHENSIVE FRAME SEARCH START ==========`);
+        log(`Target: "${target}" | Action: ${action} | Value: "${fillValue || ''}"`);
         // Get all frames in the page (includes cross-origin frames via Playwright API)
         const frames = state.page.frames();
-        log(`Found ${frames.length} total frames to search`);
+        log(`Total frames available: ${frames.length}`);
+        // Sequential frame search
         for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
             const frame = frames[frameIndex];
+            log(`\n--- Searching Frame ${frameIndex + 1}/${frames.length} ---`);
             try {
-                // Wait for frame to be ready
+                // Wait for frame content to load
                 await frame.waitForLoadState('domcontentloaded').catch(() => { });
+                log(`Frame ${frameIndex} DOM loaded`);
                 if (action === 'click') {
-                    // Try clicking in this frame
+                    // CLICK ACTION - Search for clickable elements
+                    log(`[CLICK] Searching for clickable elements matching: "${target}"`);
+                    // Strategy 1: Find by button/link text content
                     try {
-                        const elements = await frame.locator('*').all();
-                        for (const el of elements) {
+                        log(`  [S1] Looking for buttons/links with matching text...`);
+                        const buttons = await frame.locator('button, a, [role="button"], [role="tab"], [role="menuitem"]').all();
+                        log(`  Found ${buttons.length} potential clickables in frame ${frameIndex}`);
+                        for (let i = 0; i < buttons.length; i++) {
+                            const btn = buttons[i];
+                            try {
+                                const text = await btn.textContent();
+                                const ariaLabel = await btn.getAttribute('aria-label');
+                                const title = await btn.getAttribute('title');
+                                const matches = text?.toLowerCase().includes(target.toLowerCase()) ||
+                                    ariaLabel?.toLowerCase().includes(target.toLowerCase()) ||
+                                    title?.toLowerCase().includes(target.toLowerCase());
+                                if (matches) {
+                                    const isVisible = await btn.isVisible().catch(() => false);
+                                    if (isVisible) {
+                                        log(`  ✓ Found matching button in frame ${frameIndex}: "${text?.trim().substring(0, 50)}"`);
+                                        try {
+                                            await btn.scrollIntoViewIfNeeded();
+                                            await btn.click();
+                                            log(`  ✓ Successfully clicked element`);
+                                            return true;
+                                        }
+                                        catch (clickErr) {
+                                            log(`  ✗ Click failed: ${clickErr.message?.substring(0, 40)}`);
+                                        }
+                                    }
+                                }
+                            }
+                            catch (e) {
+                                // Continue to next element
+                            }
+                        }
+                    }
+                    catch (e) {
+                        log(`  [S1] Button search failed in frame ${frameIndex}`);
+                    }
+                    // Strategy 2: Find by div/span with onclick or cursor:pointer
+                    try {
+                        log(`  [S2] Looking for divs/spans with onclick handlers...`);
+                        const clickables = await frame.locator('div, span, p').all();
+                        log(`  Checking ${clickables.length} div/span/p elements`);
+                        for (let i = 0; i < Math.min(clickables.length, 500); i++) {
+                            const el = clickables[i];
                             try {
                                 const text = await el.textContent();
-                                if (text?.toLowerCase().includes(target.toLowerCase())) {
+                                const onclick = await el.getAttribute('onclick');
+                                if (text?.toLowerCase().includes(target.toLowerCase()) && onclick) {
                                     const isVisible = await el.isVisible().catch(() => false);
                                     if (isVisible) {
-                                        log(`Found clickable in frame ${frameIndex}: ${target}`);
-                                        await el.click().catch(() => { });
+                                        log(`  ✓ Found clickable div/span in frame ${frameIndex}`);
+                                        await el.scrollIntoViewIfNeeded();
+                                        await el.click();
                                         return true;
                                     }
                                 }
                             }
                             catch (e) {
-                                // Skip element
+                                // Continue
                             }
                         }
                     }
                     catch (e) {
-                        log(`Click search in frame ${frameIndex} failed (may be cross-origin)`);
+                        log(`  [S2] Div/span click search failed`);
                     }
                 }
                 else if (action === 'fill' && fillValue) {
-                    // Try filling in this frame
+                    // FILL ACTION - Search for input fields
+                    log(`[FILL] Searching for input fields matching: "${target}"`);
+                    // Strategy 1: Find by placeholder, aria-label, name, id
                     try {
-                        // Search for input/textarea elements
-                        const inputs = await frame.locator('input, textarea').all();
-                        for (const input of inputs) {
+                        log(`  [S1] Looking for input/textarea by attributes...`);
+                        const inputs = await frame.locator('input, textarea, [contenteditable="true"]').all();
+                        log(`  Found ${inputs.length} input elements in frame ${frameIndex}`);
+                        for (let i = 0; i < inputs.length; i++) {
+                            const input = inputs[i];
                             try {
                                 const placeholder = await input.getAttribute('placeholder');
                                 const ariaLabel = await input.getAttribute('aria-label');
                                 const name = await input.getAttribute('name');
                                 const id = await input.getAttribute('id');
-                                const matches = placeholder?.toLowerCase().includes(target.toLowerCase()) ||
-                                    ariaLabel?.toLowerCase().includes(target.toLowerCase()) ||
-                                    name?.toLowerCase().includes(target.toLowerCase()) ||
-                                    id?.toLowerCase().includes(target.toLowerCase());
-                                if (matches) {
+                                const type = await input.getAttribute('type');
+                                const allAttrs = `${placeholder} ${ariaLabel} ${name} ${id}`.toLowerCase();
+                                if (allAttrs.includes(target.toLowerCase())) {
                                     const isVisible = await input.isVisible().catch(() => false);
-                                    if (isVisible) {
-                                        log(`Found input in frame ${frameIndex}: ${target}`);
-                                        await input.fill(fillValue);
-                                        return true;
+                                    const isEnabled = await input.isEnabled().catch(() => true);
+                                    if (isVisible && isEnabled) {
+                                        log(`  ✓ Found matching input in frame ${frameIndex}: placeholder="${placeholder}", name="${name}"`);
+                                        try {
+                                            await input.scrollIntoViewIfNeeded();
+                                            await input.fill(fillValue);
+                                            await input.dispatchEvent('change');
+                                            log(`  ✓ Successfully filled with: "${fillValue}"`);
+                                            return true;
+                                        }
+                                        catch (fillErr) {
+                                            log(`  ✗ Fill failed: ${fillErr.message?.substring(0, 40)}`);
+                                        }
                                     }
                                 }
                             }
                             catch (e) {
-                                // Skip input
+                                // Continue to next input
                             }
                         }
                     }
                     catch (e) {
-                        log(`Fill search in frame ${frameIndex} failed (may be cross-origin)`);
+                        log(`  [S1] Input search failed in frame ${frameIndex}`);
+                    }
+                    // Strategy 2: Find by associated label text
+                    try {
+                        log(`  [S2] Looking for inputs by associated label...`);
+                        const labels = await frame.locator('label').all();
+                        log(`  Found ${labels.length} labels to check`);
+                        for (let i = 0; i < labels.length; i++) {
+                            const label = labels[i];
+                            try {
+                                const labelText = await label.textContent();
+                                if (labelText?.toLowerCase().includes(target.toLowerCase())) {
+                                    // Find associated input
+                                    const forAttr = await label.getAttribute('for');
+                                    let inputEl = null;
+                                    if (forAttr) {
+                                        inputEl = await frame.locator(`#${forAttr}`).first();
+                                    }
+                                    else {
+                                        inputEl = await label.locator('input, textarea').first();
+                                    }
+                                    if (inputEl) {
+                                        const isVisible = await inputEl.isVisible().catch(() => false);
+                                        if (isVisible) {
+                                            log(`  ✓ Found input by label "${labelText?.substring(0, 30)}" in frame ${frameIndex}`);
+                                            await inputEl.scrollIntoViewIfNeeded();
+                                            await inputEl.fill(fillValue);
+                                            await inputEl.dispatchEvent('change');
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                            catch (e) {
+                                // Continue
+                            }
+                        }
+                    }
+                    catch (e) {
+                        log(`  [S2] Label search failed`);
                     }
                 }
             }
             catch (frameError) {
-                log(`Frame ${frameIndex} error: ${frameError.message?.substring(0, 50)}`);
+                log(`Frame ${frameIndex} error: ${frameError.message?.substring(0, 60)}`);
             }
         }
+        log(`\n========== SEARCH COMPLETED - NO MATCH FOUND ==========\n`);
         return false;
     }
     catch (error) {
-        log(`Frame search failed: ${error.message}`);
+        log(`Frame search error: ${error.message}`);
         return false;
     }
 }
@@ -524,7 +758,7 @@ async function waitForDynamicElement(target, timeout = 5000) {
 async function advancedElementSearch(target, action, fillValue, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            log(`[Advanced Search Attempt ${attempt}/${maxRetries}] ${target}`);
+            log(`\n[Advanced Search Attempt ${attempt}/${maxRetries}] Target: "${target}"`);
             // Step 1: Wait for dynamic element (in case it's being created)
             const dynamicFound = await waitForDynamicElement(target, 2000);
             if (dynamicFound) {
@@ -542,13 +776,17 @@ async function advancedElementSearch(target, action, fillValue, maxRetries = 3) 
                 }
             }
             // Step 2: Search across all frames (handles cross-origin and nested)
+            log(`Attempting frame-based search...`);
             const frameResult = await searchInAllFrames(target, action, fillValue);
             if (frameResult)
                 return true;
-            // Step 3: If still not found, try old strategies as fallback
-            // (this ensures backward compatibility)
+            // Step 3: Try deep DOM search on main page as fallback
+            log(`Attempting deep DOM search on main page...`);
+            const deepResult = await deepDOMSearch(target, action, fillValue);
+            if (deepResult)
+                return true;
             if (attempt < maxRetries) {
-                log(`Retrying in ${1000}ms...`);
+                log(`Retrying in 1000ms...`);
                 await state.page?.waitForTimeout(1000);
             }
         }
@@ -556,6 +794,7 @@ async function advancedElementSearch(target, action, fillValue, maxRetries = 3) 
             log(`Advanced search attempt ${attempt} error: ${error.message}`);
         }
     }
+    log(`All advanced search attempts exhausted for: "${target}"`);
     return false;
 }
 async function clickWithRetry(target, maxRetries = 5) {

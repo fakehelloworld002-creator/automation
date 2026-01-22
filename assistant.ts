@@ -463,37 +463,7 @@ async function deepDOMSearch(target: string, action: 'click' | 'fill', fillValue
         } else if (action === 'fill' && fillValue) {
             // Deep search for input fields
             const filled = await state.page.evaluate(({ searchText, fillValue: value }) => {
-                // Find all inputs and textareas
-                const inputs = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'));
-                
-                for (const inp of inputs) {
-                    const placeholder = (inp as any).placeholder?.toLowerCase() || '';
-                    const ariaLabel = inp.getAttribute('aria-label')?.toLowerCase() || '';
-                    const name = (inp as any).name?.toLowerCase() || '';
-                    const id = (inp as any).id?.toLowerCase() || '';
-                    const allText = `${placeholder} ${ariaLabel} ${name} ${id}`;
-                    
-                    if (allText.includes(searchText.toLowerCase())) {
-                        const style = window.getComputedStyle(inp);
-                        const rect = (inp as HTMLElement).getBoundingClientRect();
-                        
-                        if (rect.width > 0 && rect.height > 0 &&
-                            style.display !== 'none' && 
-                            style.visibility !== 'hidden' &&
-                            !(inp as any).disabled) {
-                            
-                            (inp as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            setTimeout(() => {
-                                (inp as any).value = value;
-                                (inp as any).dispatchEvent(new Event('input', { bubbles: true }));
-                                (inp as any).dispatchEvent(new Event('change', { bubbles: true }));
-                            }, 300);
-                            return true;
-                        }
-                    }
-                }
-                
-                // Try by associated label text
+                // STRATEGY 1: Search by associated VISIBLE LABEL TEXT first
                 const labels = Array.from(document.querySelectorAll('label'));
                 for (const label of labels) {
                     const labelText = label.textContent?.toLowerCase() || '';
@@ -524,6 +494,36 @@ async function deepDOMSearch(target: string, action: 'click' | 'fill', fillValue
                                 }, 300);
                                 return true;
                             }
+                        }
+                    }
+                }
+                
+                // STRATEGY 2: Fallback to placeholder, aria-label, name, id
+                const inputs = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'));
+                
+                for (const inp of inputs) {
+                    const placeholder = (inp as any).placeholder?.toLowerCase() || '';
+                    const ariaLabel = inp.getAttribute('aria-label')?.toLowerCase() || '';
+                    const name = (inp as any).name?.toLowerCase() || '';
+                    const id = (inp as any).id?.toLowerCase() || '';
+                    const allText = `${placeholder} ${ariaLabel} ${name} ${id}`;
+                    
+                    if (allText.includes(searchText.toLowerCase())) {
+                        const style = window.getComputedStyle(inp);
+                        const rect = (inp as HTMLElement).getBoundingClientRect();
+                        
+                        if (rect.width > 0 && rect.height > 0 &&
+                            style.display !== 'none' && 
+                            style.visibility !== 'hidden' &&
+                            !(inp as any).disabled) {
+                            
+                            (inp as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            setTimeout(() => {
+                                (inp as any).value = value;
+                                (inp as any).dispatchEvent(new Event('input', { bubbles: true }));
+                                (inp as any).dispatchEvent(new Event('change', { bubbles: true }));
+                            }, 300);
+                            return true;
                         }
                     }
                 }
@@ -648,11 +648,69 @@ async function searchInAllFrames(target: string, action: 'click' | 'fill', fillV
                     // FILL ACTION - Search for input fields
                     log(`[FILL] Searching for input fields matching: "${target}"`);
                     
-                    // Strategy 1: Find by placeholder, aria-label, name, id
+                    // Strategy 1: Find by associated LABEL TEXT first (exact visible text on page)
                     try {
-                        log(`  [S1] Looking for input/textarea by attributes...`);
+                        log(`  [S1] Looking for inputs by ASSOCIATED LABEL TEXT (exact visible names)...`);
+                        const labels = await frame.locator('label').all();
+                        log(`  Found ${labels.length} labels to check in frame ${frameIndex}`);
+                        
+                        for (let i = 0; i < labels.length; i++) {
+                            const label = labels[i];
+                            try {
+                                const labelText = await label.textContent();
+                                const cleanLabel = labelText?.trim().toLowerCase() || '';
+                                const target_lower = target.toLowerCase();
+                                
+                                // Log first few labels being checked for debugging
+                                if (i < 3) {
+                                    log(`    Checking label: "${labelText?.trim().substring(0, 40)}"`);
+                                }
+                                
+                                // EXACT MATCH on visible label text
+                                if (cleanLabel.includes(target_lower) || target_lower.includes(cleanLabel)) {
+                                    log(`    ✓ Label matched! "${labelText?.trim().substring(0, 40)}"`);
+                                    
+                                    // Find associated input
+                                    const forAttr = await label.getAttribute('for');
+                                    let inputEl = null;
+                                    
+                                    if (forAttr) {
+                                        inputEl = await frame.locator(`#${forAttr}`).first();
+                                    } else {
+                                        inputEl = await label.locator('input, textarea').first();
+                                    }
+                                    
+                                    if (inputEl) {
+                                        const isVisible = await inputEl.isVisible().catch(() => false);
+                                        const isEnabled = await inputEl.isEnabled().catch(() => true);
+                                        
+                                        if (isVisible && isEnabled) {
+                                            log(`  ✓ Found input by VISIBLE LABEL: "${labelText?.trim().substring(0, 50)}" in frame ${frameIndex}`);
+                                            try {
+                                                await inputEl.scrollIntoViewIfNeeded();
+                                                await inputEl.fill(fillValue);
+                                                await inputEl.dispatchEvent('change');
+                                                log(`  ✓ Successfully filled with: "${fillValue}"`);
+                                                return true;
+                                            } catch (fillErr: any) {
+                                                log(`  ✗ Fill failed: ${fillErr.message?.substring(0, 40)}`);
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (e: any) {
+                                // Continue to next label
+                            }
+                        }
+                    } catch (e: any) {
+                        log(`  [S1] Label search failed in frame ${frameIndex}`);
+                    }
+
+                    // Strategy 2: Find by placeholder, aria-label, name, id (fallback)
+                    try {
+                        log(`  [S2] Looking for inputs by attributes (fallback)...`);
                         const inputs = await frame.locator('input, textarea, [contenteditable="true"]').all();
-                        log(`  Found ${inputs.length} input elements in frame ${frameIndex}`);
+                        log(`  Checking ${inputs.length} input elements in frame ${frameIndex}`);
                         
                         for (let i = 0; i < inputs.length; i++) {
                             const input = inputs[i];
@@ -670,7 +728,7 @@ async function searchInAllFrames(target: string, action: 'click' | 'fill', fillV
                                     const isEnabled = await input.isEnabled().catch(() => true);
                                     
                                     if (isVisible && isEnabled) {
-                                        log(`  ✓ Found matching input in frame ${frameIndex}: placeholder="${placeholder}", name="${name}"`);
+                                        log(`  ✓ Found matching input by attribute in frame ${frameIndex}: placeholder="${placeholder}", name="${name}"`);
                                         try {
                                             await input.scrollIntoViewIfNeeded();
                                             await input.fill(fillValue);
@@ -687,48 +745,7 @@ async function searchInAllFrames(target: string, action: 'click' | 'fill', fillV
                             }
                         }
                     } catch (e: any) {
-                        log(`  [S1] Input search failed in frame ${frameIndex}`);
-                    }
-
-                    // Strategy 2: Find by associated label text
-                    try {
-                        log(`  [S2] Looking for inputs by associated label...`);
-                        const labels = await frame.locator('label').all();
-                        log(`  Found ${labels.length} labels to check`);
-                        
-                        for (let i = 0; i < labels.length; i++) {
-                            const label = labels[i];
-                            try {
-                                const labelText = await label.textContent();
-                                
-                                if (labelText?.toLowerCase().includes(target.toLowerCase())) {
-                                    // Find associated input
-                                    const forAttr = await label.getAttribute('for');
-                                    let inputEl = null;
-                                    
-                                    if (forAttr) {
-                                        inputEl = await frame.locator(`#${forAttr}`).first();
-                                    } else {
-                                        inputEl = await label.locator('input, textarea').first();
-                                    }
-                                    
-                                    if (inputEl) {
-                                        const isVisible = await inputEl.isVisible().catch(() => false);
-                                        if (isVisible) {
-                                            log(`  ✓ Found input by label "${labelText?.substring(0, 30)}" in frame ${frameIndex}`);
-                                            await inputEl.scrollIntoViewIfNeeded();
-                                            await inputEl.fill(fillValue);
-                                            await inputEl.dispatchEvent('change');
-                                            return true;
-                                        }
-                                    }
-                                }
-                            } catch (e: any) {
-                                // Continue
-                            }
-                        }
-                    } catch (e: any) {
-                        log(`  [S2] Label search failed`);
+                        log(`  [S2] Attribute search failed`);
                     }
                 }
                 
@@ -1382,6 +1399,56 @@ async function getAllPageElements(): Promise<any[]> {
             let elementIndex = 0;
 
             try {
+                // Helper: Find associated label text for an element
+                const getAssociatedLabel = (el: Element): string => {
+                    const id = el.getAttribute('id');
+                    
+                    // Try to find label with for attribute
+                    if (id) {
+                        const label = document.querySelector(`label[for="${id}"]`);
+                        if (label && label.textContent) {
+                            return label.textContent.trim();
+                        }
+                    }
+                    
+                    // Try to find parent label
+                    let parent = el.parentElement;
+                    while (parent) {
+                        if (parent.tagName === 'LABEL') {
+                            return parent.textContent?.trim() || '';
+                        }
+                        parent = parent.parentElement;
+                    }
+                    
+                    return '';
+                };
+
+                // Helper: Get the display name for an element
+                const getDisplayName = (el: Element, tagName: string, textContent: string, placeholder: string, ariaLabel: string): string => {
+                    // For inputs, try to get associated label first
+                    if (tagName === 'input' || tagName === 'textarea') {
+                        const labelText = getAssociatedLabel(el);
+                        if (labelText) {
+                            return labelText;
+                        }
+                        
+                        // Fall back to placeholder or aria-label
+                        if (placeholder) return placeholder;
+                        if (ariaLabel) return ariaLabel;
+                    }
+                    
+                    // For buttons and links, use text content
+                    if (textContent && textContent.length > 0) {
+                        return textContent;
+                    }
+                    
+                    // For other elements, use aria-label or placeholder
+                    if (ariaLabel) return ariaLabel;
+                    if (placeholder) return placeholder;
+                    
+                    return '';
+                };
+
                 // Get ALL elements on the page
                 const allElements = document.querySelectorAll('*');
                 
@@ -1464,8 +1531,16 @@ async function getAllPageElements(): Promise<any[]> {
                             return; // Skip other elements
                         }
                         
-                        // Create unique identifier
-                        const uniqueKey = `${tagName}:${id}:${name}:${textContent.substring(0, 30)}`;
+                        // Get the EXACT visible label name
+                        const displayName = getDisplayName(el, tagName, textContent, placeholder, ariaLabel);
+                        
+                        // Skip elements without a meaningful name
+                        if (!displayName && !id && !name) {
+                            return;
+                        }
+                        
+                        // Create unique identifier based on display name and type
+                        const uniqueKey = `${tagName}:${displayName}:${id}:${name}`;
                         
                         // Avoid duplicates
                         if (seen.has(uniqueKey)) {
@@ -1475,7 +1550,9 @@ async function getAllPageElements(): Promise<any[]> {
                         
                         // Get element position
                         const rect = el.getBoundingClientRect();
-                        const identifier = id || name || ariaLabel || `${elementType}_${elementIndex}`;
+                        
+                        // Use display name as primary label, fallback to id/name
+                        const label = displayName || id || name || `${elementType}_${elementIndex}`;
                         
                         items.push({
                             index: elementIndex,
@@ -1490,7 +1567,8 @@ async function getAllPageElements(): Promise<any[]> {
                             role,
                             visible: isVisible,
                             interactive: isInteractive,
-                            label: identifier,
+                            label: label,  // THIS IS THE EXACT VISIBLE TEXT
+                            displayName: displayName,  // NEW: Store the exact display name separately
                             priority,
                             location: 'main',
                             position: {
