@@ -661,6 +661,11 @@ async function searchInAllFrames(target: string, action: 'click' | 'fill', fillV
                                 const cleanLabel = labelText?.trim().toLowerCase() || '';
                                 const target_lower = target.toLowerCase();
                                 
+                                // Skip empty labels (they don't have meaningful text)
+                                if (cleanLabel.length === 0) {
+                                    continue;
+                                }
+                                
                                 // Log first few labels being checked for debugging
                                 if (i < 3) {
                                     log(`    Checking label: "${labelText?.trim().substring(0, 40)}"`);
@@ -1404,10 +1409,16 @@ async function getAllPageElements(): Promise<any[]> {
                     const id = el.getAttribute('id');
                     const name = el.getAttribute('name');
                     
+                    // PRIORITY 0: Check the element's OWN title/tooltip first (this is shown in tooltips)
+                    const title = el.getAttribute('title');
+                    if (title && title.trim().length > 0) {
+                        return title.trim();
+                    }
+                    
                     // Strategy 1: Try to find label with for attribute pointing to this element's id
                     if (id) {
                         const label = document.querySelector(`label[for="${id}"]`);
-                        if (label && label.textContent?.trim()) {
+                        if (label && label.textContent?.trim() && label.textContent.trim().length > 0) {
                             return label.textContent.trim();
                         }
                     }
@@ -1415,7 +1426,7 @@ async function getAllPageElements(): Promise<any[]> {
                     // Strategy 2: Try to find label with for attribute pointing to this element's name
                     if (name) {
                         const label = document.querySelector(`label[for="${name}"]`);
-                        if (label && label.textContent?.trim()) {
+                        if (label && label.textContent?.trim() && label.textContent.trim().length > 0) {
                             return label.textContent.trim();
                         }
                     }
@@ -1425,8 +1436,10 @@ async function getAllPageElements(): Promise<any[]> {
                     while (parent) {
                         if (parent.tagName === 'LABEL') {
                             const labelText = parent.textContent?.trim() || '';
-                            // Remove the input's own text if any
-                            return labelText.replace((el as any).value || '', '').trim();
+                            if (labelText.length > 0) {
+                                // Remove the input's own text if any
+                                return labelText.replace((el as any).value || '', '').trim();
+                            }
                         }
                         parent = parent.parentElement;
                     }
@@ -1436,38 +1449,41 @@ async function getAllPageElements(): Promise<any[]> {
                     if (container) {
                         const labels = Array.from(container.querySelectorAll('label'));
                         for (const lbl of labels) {
-                            if (lbl.textContent?.trim()) {
+                            const lblText = lbl.textContent?.trim() || '';
+                            if (lblText.length > 0) {
                                 // Check if this label is associated with our element
                                 const forAttr = lbl.getAttribute('for');
                                 if (forAttr && (forAttr === id || forAttr === name)) {
-                                    return lbl.textContent.trim();
+                                    return lblText;
                                 }
                             }
                         }
                     }
                     
                     // Strategy 5: Look for aria-label or aria-labelledby
+                    const ariaLabel = el.getAttribute('aria-label');
+                    if (ariaLabel && ariaLabel.trim().length > 0) {
+                        return ariaLabel.trim();
+                    }
+                    
                     const ariaLabelledby = el.getAttribute('aria-labelledby');
                     if (ariaLabelledby) {
                         const labelEl = document.getElementById(ariaLabelledby);
-                        if (labelEl && labelEl.textContent?.trim()) {
+                        if (labelEl && labelEl.textContent?.trim() && labelEl.textContent.trim().length > 0) {
                             return labelEl.textContent.trim();
                         }
                     }
                     
-                    // Strategy 6: Look for title attribute
-                    const title = el.getAttribute('title');
-                    if (title?.trim()) {
-                        return title.trim();
-                    }
-                    
-                    // Strategy 7: Look for preceding text nodes or labels above the element
+                    // Strategy 6: Look for preceding text nodes or labels above the element
                     let sibling = el.previousElementSibling;
                     while (sibling) {
-                        if (sibling.tagName === 'LABEL' && sibling.textContent?.trim()) {
-                            return sibling.textContent.trim();
+                        if (sibling.tagName === 'LABEL') {
+                            const sibText = sibling.textContent?.trim() || '';
+                            if (sibText.length > 0) {
+                                return sibText;
+                            }
                         }
-                        if (sibling.tagName === 'SPAN' && sibling.textContent?.trim() && sibling.textContent.length < 100) {
+                        if ((sibling.tagName === 'SPAN' || sibling.tagName === 'DIV') && sibling.textContent?.trim() && sibling.textContent.trim().length < 100 && sibling.textContent.trim().length > 0) {
                             return sibling.textContent.trim();
                         }
                         sibling = sibling.previousElementSibling;
@@ -1489,9 +1505,6 @@ async function getAllPageElements(): Promise<any[]> {
                         if (placeholder && placeholder.length > 0) return placeholder;
                         // Fall back to aria-label
                         if (ariaLabel && ariaLabel.length > 0) return ariaLabel;
-                        // Fall back to title
-                        const title = el.getAttribute('title');
-                        if (title && title.length > 0) return title;
                     }
                     
                     // For buttons and links, use text content
@@ -1502,16 +1515,6 @@ async function getAllPageElements(): Promise<any[]> {
                     // For other elements, use aria-label or placeholder
                     if (ariaLabel && ariaLabel.length > 0) return ariaLabel;
                     if (placeholder && placeholder.length > 0) return placeholder;
-                    
-                    return '';
-                };
-                    if (textContent && textContent.length > 0) {
-                        return textContent;
-                    }
-                    
-                    // For other elements, use aria-label or placeholder
-                    if (ariaLabel) return ariaLabel;
-                    if (placeholder) return placeholder;
                     
                     return '';
                 };
