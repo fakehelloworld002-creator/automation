@@ -1301,6 +1301,218 @@ async function getAllPageElements() {
         return [];
     }
 }
+/* ============== INTELLIGENT PAGE READINESS ============== */
+/**
+ * Comprehensive page readiness check
+ * Waits for page to be fully loaded using multiple strategies
+ */
+async function waitForPageReady(timeout = 30000) {
+    if (!state.page || state.page.isClosed())
+        return false;
+    const startTime = Date.now();
+    let lastActivityTime = Date.now();
+    try {
+        log(`[Page Readiness] Starting comprehensive page load check...`);
+        // Strategy 1: Wait for main page navigation
+        try {
+            log(`[Page Readiness] Waiting for main page load state...`);
+            await state.page.waitForLoadState('networkidle', { timeout: Math.min(timeout, 15000) }).catch(() => {
+                log(`[Page Readiness] networkidle timeout, continuing with other checks`);
+            });
+        }
+        catch (e) {
+            log(`[Page Readiness] Page load state check skipped`);
+        }
+        // Strategy 2: Wait for all frames to be ready
+        try {
+            log(`[Page Readiness] Waiting for all frames to load...`);
+            const frames = state.page.frames();
+            for (const frame of frames) {
+                try {
+                    await frame.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => { });
+                }
+                catch (e) {
+                    // Frame might be cross-origin, continue
+                }
+            }
+        }
+        catch (e) {
+            log(`[Page Readiness] Frame loading check skipped`);
+        }
+        // Strategy 3: Wait for common loading indicators to disappear
+        try {
+            log(`[Page Readiness] Checking for loading indicators...`);
+            const loadingIndicators = await state.page.evaluate(() => {
+                const indicators = document.querySelectorAll('[class*="loading"], [class*="spinner"], [id*="loading"], [id*="spinner"], ' +
+                    '[data-testid*="loading"], [aria-busy="true"], .loader, .load, .progress');
+                return indicators.length;
+            });
+            if (loadingIndicators > 0) {
+                log(`[Page Readiness] Found ${loadingIndicators} loading indicator(s), waiting for them to disappear...`);
+                const indicatorsGone = await state.page.evaluate(() => {
+                    return new Promise((resolve) => {
+                        const checkIndicators = () => {
+                            const indicators = document.querySelectorAll('[class*="loading"], [class*="spinner"], [id*="loading"], [id*="spinner"], ' +
+                                '[data-testid*="loading"], [aria-busy="true"], .loader, .load, .progress');
+                            return indicators.length === 0;
+                        };
+                        if (checkIndicators()) {
+                            resolve(true);
+                            return;
+                        }
+                        const observer = new MutationObserver(() => {
+                            if (checkIndicators()) {
+                                observer.disconnect();
+                                resolve(true);
+                            }
+                        });
+                        observer.observe(document.body, {
+                            childList: true,
+                            subtree: true,
+                            attributes: true
+                        });
+                        // Timeout after 8 seconds
+                        setTimeout(() => {
+                            observer.disconnect();
+                            resolve(false);
+                        }, 8000);
+                    });
+                });
+                if (indicatorsGone) {
+                    log(`[Page Readiness] All loading indicators disappeared`);
+                }
+            }
+        }
+        catch (e) {
+            log(`[Page Readiness] Loading indicator check failed`);
+        }
+        // Strategy 4: Wait for DOM to be interactive
+        try {
+            log(`[Page Readiness] Waiting for DOM to be interactive...`);
+            await state.page.evaluate(() => {
+                return new Promise((resolve) => {
+                    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                        resolve();
+                    }
+                    else {
+                        document.addEventListener('DOMContentLoaded', () => resolve());
+                        setTimeout(() => resolve(), 3000);
+                    }
+                });
+            });
+        }
+        catch (e) {
+            log(`[Page Readiness] DOM interactive check failed`);
+        }
+        // Strategy 5: Wait for network to settle (no requests for 2 seconds)
+        try {
+            log(`[Page Readiness] Waiting for network to settle...`);
+            let pendingRequests = true;
+            let settledCount = 0;
+            while (pendingRequests && Date.now() - startTime < timeout) {
+                try {
+                    const requestCount = await state.page.evaluate(() => {
+                        return performance.getEntriesByType?.('resource')?.length || 0;
+                    });
+                    if (requestCount === 0 || settledCount > 3) {
+                        pendingRequests = false;
+                        log(`[Page Readiness] Network has settled`);
+                    }
+                    else {
+                        settledCount++;
+                        await state.page.waitForTimeout(500);
+                    }
+                }
+                catch (e) {
+                    pendingRequests = false;
+                }
+            }
+        }
+        catch (e) {
+            log(`[Page Readiness] Network settle check failed`);
+        }
+        // Strategy 6: Wait for all AJAX/Fetch requests to complete
+        try {
+            log(`[Page Readiness] Waiting for AJAX/Fetch requests to complete...`);
+            await state.page.evaluate(() => {
+                return new Promise((resolve) => {
+                    let requestCount = 0;
+                    const originalFetch = window.fetch;
+                    const originalXHR = window.XMLHttpRequest;
+                    // Track fetch requests
+                    window.fetch = function (...args) {
+                        requestCount++;
+                        return originalFetch.apply(this, args).finally(() => {
+                            requestCount--;
+                            if (requestCount === 0) {
+                                setTimeout(() => resolve(), 500);
+                            }
+                        });
+                    };
+                    // Check if requests are already in flight
+                    setTimeout(() => {
+                        if (requestCount === 0) {
+                            resolve();
+                        }
+                    }, 500);
+                    // Timeout after 8 seconds
+                    setTimeout(() => resolve(), 8000);
+                });
+            }).catch(() => {
+                log(`[Page Readiness] AJAX tracking setup failed`);
+            });
+        }
+        catch (e) {
+            log(`[Page Readiness] AJAX check failed`);
+        }
+        // Strategy 7: Final stability check
+        try {
+            log(`[Page Readiness] Running final stability check...`);
+            const isStable = await state.page.evaluate(() => {
+                // Check if page has interactive elements visible
+                const interactiveElements = document.querySelectorAll('button, input, a, select, textarea, [role="button"]');
+                return interactiveElements.length > 0 && document.readyState !== 'loading';
+            });
+            if (isStable) {
+                log(`[Page Readiness] ✓ Page is stable and ready`);
+            }
+        }
+        catch (e) {
+            log(`[Page Readiness] Stability check failed`);
+        }
+        const totalWaitTime = Date.now() - startTime;
+        log(`[Page Readiness] COMPLETE - Total wait time: ${totalWaitTime}ms`);
+        return true;
+    }
+    catch (error) {
+        log(`[Page Readiness] Error during page readiness check: ${error.message}`);
+        return false;
+    }
+}
+/**
+ * Execute with automatic page readiness wait before action
+ */
+async function executeWithPageReady(actionFn, stepName) {
+    try {
+        log(`[${stepName}] Ensuring page is ready before execution...`);
+        // Always wait for page readiness
+        const isReady = await waitForPageReady(30000);
+        if (isReady) {
+            log(`[${stepName}] Page is ready, executing action...`);
+        }
+        else {
+            log(`[${stepName}] Page readiness check completed with warnings, proceeding anyway...`);
+        }
+        // Add small delay to ensure rendering
+        await state.page?.waitForTimeout(300);
+        // Execute the action
+        return await actionFn();
+    }
+    catch (error) {
+        log(`[${stepName}] Error during execution: ${error.message}`);
+        throw error;
+    }
+}
 /* ============== STEP EXECUTION WITH SELF-HEALING ============== */
 async function executeStep(stepData) {
     const stepId = stepData['STEP'] || `STEP_${state.currentStepIndex + 1}`;
@@ -1340,6 +1552,8 @@ async function executeStep(stepData) {
                     await state.page.goto(target, { waitUntil: 'networkidle', timeout: 30000 });
                     // Check if new window/tab opened during navigation
                     await switchToLatestPage();
+                    // Wait for page to be fully ready after navigation
+                    await executeWithPageReady(async () => true, `${stepId}_OPENURL_READY`);
                     result.status = 'PASS';
                     result.actualOutput = `Opened: ${target}`;
                     break;
@@ -1352,7 +1566,7 @@ async function executeStep(stepData) {
             }
         }
         else if (action === 'CLICK') {
-            const success = await clickWithRetry(target, 5);
+            const success = await executeWithPageReady(async () => await clickWithRetry(target, 5), `${stepId}_CLICK`);
             if (success) {
                 await new Promise(resolve => setTimeout(resolve, 800));
                 // Check if new window/tab opened after click
@@ -1367,7 +1581,7 @@ async function executeStep(stepData) {
             }
         }
         else if (action === 'FILL' || action === 'TYPE') {
-            const success = await fillWithRetry(target, data, 5);
+            const success = await executeWithPageReady(async () => await fillWithRetry(target, data, 5), `${stepId}_FILL`);
             if (success) {
                 await new Promise(resolve => setTimeout(resolve, 500));
                 result.status = 'PASS';
@@ -1386,7 +1600,7 @@ async function executeStep(stepData) {
                     if (!state.page || state.page.isClosed())
                         throw new Error('Page closed');
                 }
-                await state.page.selectOption(target, data, { timeout: 5000 });
+                await executeWithPageReady(async () => state.page.selectOption(target, data, { timeout: 5000 }), `${stepId}_SELECT`);
                 await new Promise(resolve => setTimeout(resolve, 300));
                 result.status = 'PASS';
                 result.actualOutput = `Selected: ${data}`;
