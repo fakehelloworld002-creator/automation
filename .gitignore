@@ -3,3 +3,5 @@ RESULTS/
 temp_uploads/
 temp_working_version.*
 *.xlsx
+assistant.js
+doc_assis_playwright.js
