@@ -3305,7 +3305,20 @@ async function runAutomation(excelFilePath: string) {
         // Setup listeners for new windows/tabs
         await setupPageListeners(state.page);
 
-        log(`Starting: ${rows.length} steps`);
+        // Log available columns and execution status
+        if (rows.length > 0) {
+            const firstRow = rows[0];
+            const columns = Object.keys(firstRow);
+            log(`\n📊 Excel Columns Found: ${columns.join(' | ')}`);
+            
+            // Check for execution column
+            const executionColumnFound = columns.find(col => 
+                col.toUpperCase().includes('EXECUTE') || col.toUpperCase().includes('EXECUTION')
+            );
+            log(`📌 Execution Column: ${executionColumnFound || 'NOT FOUND - using default (YES)'}`);
+        }
+
+        log(`\n🚀 Starting: ${rows.length} steps\n`);
 
         for (let i = 0; i < rows.length; i++) {
             if (state.isStopped) break;
@@ -3322,11 +3335,25 @@ async function runAutomation(excelFilePath: string) {
             await switchToLatestPage();
 
             const row = rows[i];
-            const execute = (row['TO BE EXECUTED'] || 'YES').toString().toUpperCase() === 'YES';
+            
+            // CHECK IF STEP SHOULD BE EXECUTED - Try multiple column name variations
+            const toBeExecutedValue = row['TO BE EXECUTED'] || 
+                                     row['TO_BE_EXECUTED'] || 
+                                     row['ToBeExecuted'] || 
+                                     row['Execution'] ||
+                                     row['EXECUTION'] ||
+                                     'YES';
+            
+            const execute = toBeExecutedValue.toString().trim().toUpperCase() === 'YES';
+            
+            // Log the execution decision with details
+            const stepId = row['STEP'] || `STEP_${i + 1}`;
+            log(`\n[${stepId}] TO BE EXECUTED = "${toBeExecutedValue}" → ${execute ? '✅ EXECUTING' : '⏭️ SKIPPING'}`);
 
             if (!execute) {
                 row['Status'] = 'SKIPPED';
                 row['Remarks'] = 'TO BE EXECUTED = NO';
+                log(`[${stepId}] ⏭️ STEP SKIPPED (TO BE EXECUTED is not YES)`);
                 continue;
             }
 
