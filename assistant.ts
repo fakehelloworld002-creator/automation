@@ -813,6 +813,34 @@ async function searchWindowsRecursively(
         log(`🔍 ├─ WINDOW DEPTH: ${depth}/${totalWindows - 1}`);
         log(`🔍 └─ STATUS: Searching ALL frames thoroughly...\n`);
         
+        // If subwindow with no frames, try direct element search
+        if (depth > 0 && frames.length === 0) {
+            log(`   ⚠️  [SUBWINDOW] No frames detected in subwindow - trying direct page search...`);
+            // Try searching directly on the page object
+            try {
+                const frameObj = {
+                    locator: (sel: string) => currentPage.locator(sel),
+                    evaluate: (func: any, ...args: any[]) => currentPage.evaluate(func, ...args)
+                };
+                
+                if (action === 'click') {
+                    const result = await executeClickInFrame(frameObj, target, `${windowLabel}:DirectPage`);
+                    if (result) {
+                        log(`   ✅ Found target in direct page search!`);
+                        return true;
+                    }
+                } else if (action === 'fill') {
+                    const result = await executeFillInFrame(frameObj, target, fillValue || '', `${windowLabel}:DirectPage`);
+                    if (result) {
+                        log(`   ✅ Found field in direct page search!`);
+                        return true;
+                    }
+                }
+            } catch (e: any) {
+                log(`   ℹ️ Direct page search failed: ${e.message}`);
+            }
+        }
+        
         // Search ALL frames in this window
         for (let frameIdx = 0; frameIdx < frames.length; frameIdx++) {
             const frame = frames[frameIdx];
@@ -964,11 +992,57 @@ async function validateFrameAccess(frame: any): Promise<boolean> {
 
 /**
  * Execute CLICK action in frame with sequential pattern matching
+ * ENHANCED: Better detection for subwindow elements
  */
 async function executeClickInFrame(frame: any, target: string, framePath: string): Promise<boolean> {
     const targetLower = target.toLowerCase();
     
     try {
+        // PATTERN 0: ULTRA DEEP - Use evaluate to search ALL DOM including hidden
+        try {
+            const found = await frame.evaluate((searchText) => {
+                const walk = (node: any): boolean => {
+                    if (node.nodeType === 1) { // Element node
+                        const el = node as HTMLElement;
+                        const text = (el.textContent || '').toLowerCase();
+                        const title = (el.getAttribute('title') || '').toLowerCase();
+                        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                        const dataTestId = (el.getAttribute('data-testid') || '').toLowerCase();
+                        const onclick = el.getAttribute('onclick') || '';
+                        
+                        const searchLower = searchText.toLowerCase();
+                        const allAttrs = `${text} ${title} ${ariaLabel} ${dataTestId}`;
+                        
+                        if ((allAttrs.includes(searchLower) || onclick.includes(searchLower)) && 
+                            (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button' || 
+                             el.tagName === 'A' || el.onclick !== null || el.getAttribute('onclick'))) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                el.click();
+                                return true;
+                            }
+                        }
+                    }
+                    // Walk through children
+                    for (let child of node.childNodes) {
+                        if (walk(child)) return true;
+                    }
+                    return false;
+                };
+                
+                // Start from document root
+                return walk(document);
+            }, target);
+            
+            if (found) {
+                log(`✅ [SUBWINDOW${framePath}] Clicked via DEEP SEARCH: "${target}"`);
+                return true;
+            }
+        } catch (e: any) {
+            log(`   ℹ️ Deep search in frame failed: ${e.message}`);
+        }
+
         // PATTERN 1: Buttons and Link Elements (highest priority)
         try {
             const buttons = await frame.locator('button, a[href], [role="button"], [role="tab"], [role="menuitem"], [onclick]').all();
@@ -1108,6 +1182,7 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
             // Pattern 4 failed
         }
         
+        
     } catch (error: any) {
         // Frame click error
     }
@@ -1117,11 +1192,61 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
 
 /**
  * Execute FILL action in frame with sequential pattern matching
+ * ENHANCED: Better detection for subwindow input fields
  */
 async function executeFillInFrame(frame: any, target: string, fillValue: string, framePath: string): Promise<boolean> {
     const targetLower = target.toLowerCase();
     
     try {
+        // PATTERN 0: ULTRA DEEP - Use evaluate to find ALL inputs in DOM tree
+        try {
+            const filled = await frame.evaluate(({ searchText, fillVal }) => {
+                const walk = (node: any): boolean => {
+                    if (node.nodeType === 1) { // Element node
+                        const el = node as HTMLElement;
+                        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                            const title = (el.getAttribute('title') || '').toLowerCase();
+                            const placeholder = ((el as any).placeholder || '').toLowerCase();
+                            const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                            const name = ((el as any).name || '').toLowerCase();
+                            const id = ((el as any).id || '').toLowerCase();
+                            
+                            const allAttrs = `${title} ${placeholder} ${ariaLabel} ${name} ${id}`;
+                            
+                            if (allAttrs.includes(searchText.toLowerCase())) {
+                                const rect = el.getBoundingClientRect();
+                                // Even if not visible, try to fill
+                                try {
+                                    (el as any).value = fillVal;
+                                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                                    el.dispatchEvent(new Event('blur', {bubbles: true}));
+                                    if (rect.width > 0 && rect.height > 0) {
+                                        el.scrollIntoView({behavior: 'smooth', block: 'center'});
+                                    }
+                                    return true;
+                                } catch (e) {}
+                            }
+                        }
+                    }
+                    // Walk through children
+                    for (let child of node.childNodes) {
+                        if (walk(child)) return true;
+                    }
+                    return false;
+                };
+                
+                return walk(document);
+            }, {searchText: target, fillVal: fillValue});
+            
+            if (filled) {
+                log(`✅ [SUBWINDOW${framePath}] Filled via DEEP SEARCH: "${target}" = "${fillValue}"`);
+                return true;
+            }
+        } catch (e: any) {
+            log(`   ℹ️ Deep fill search in frame failed: ${e.message}`);
+        }
+
         // PATTERN 1A: Match by title attribute (for Oracle fields)
         try {
             const inputs = await frame.locator('input, textarea').all();
