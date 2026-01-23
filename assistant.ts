@@ -797,10 +797,10 @@ async function searchWindowsRecursively(
         const pageInfo = windowHierarchy.get(currentPage);
         const windowLabel = depth === 0 ? '🏠 MAIN WINDOW' : `📍 SUBWINDOW (Level ${depth})`;
         
-        // Extended wait for subwindows to fully load
+        // Brief wait for subwindows to load
         await currentPage.waitForLoadState('domcontentloaded').catch(() => {});
         if (depth > 0) {
-            await currentPage.waitForTimeout(800); // Extra wait for overlay/popup render
+            await currentPage.waitForTimeout(300); // Reduced wait for overlay/popup render
         }
         
         // Get frames in current window - ENSURE WE GET ALL
@@ -819,7 +819,7 @@ async function searchWindowsRecursively(
             
             try {
                 await frame.waitForLoadState('domcontentloaded').catch(() => {});
-                await frame.waitForTimeout(150);
+                await frame.waitForTimeout(50); // Reduced frame wait time
                 
                 const frameLabel = frameIdx === 0 ? 'Main Frame' : `iFrame ${frameIdx}`;
                 updateSearchContext(`${windowLabel} > ${frameLabel}`, frameIdx + 1, frames.length);
@@ -1318,7 +1318,7 @@ async function executeFillInFrame(frame: any, target: string, fillValue: string,
 /**
  * Wait for dynamically created elements to appear using MutationObserver
  */
-async function waitForDynamicElement(target: string, timeout: number = 5000): Promise<boolean> {
+async function waitForDynamicElement(target: string, timeout: number = 2000): Promise<boolean> {
     if (!state.page || state.page.isClosed()) return false;
 
     const startTime = Date.now();
@@ -1396,11 +1396,11 @@ async function waitForDynamicElement(target: string, timeout: number = 5000): Pr
                         characterData: true
                     });
 
-                    // Quick timeout - we'll loop again
+                    // Quick timeout - we'll loop again (reduced for faster fail)
                     setTimeout(() => {
                         observer.disconnect();
                         resolve(false);
-                    }, 500);
+                    }, 200);
                 });
             }, { searchText: target }).catch(() => false);
 
@@ -1418,12 +1418,12 @@ async function waitForDynamicElement(target: string, timeout: number = 5000): Pr
     try {
         log(`🔍 Waiting for dynamic element: "${target}" (checking all windows, timeout: ${timeout}ms)`);
         
-        // Poll all windows until element found or timeout
+        // Poll all windows until element found or timeout - check every 100ms for faster detection
         while (Date.now() - startTime < timeout) {
             if (await checkAllWindows()) {
                 return true;
             }
-            await new Promise(r => setTimeout(r, 200)); // Check every 200ms
+            await new Promise(r => setTimeout(r, 100)); // Check every 100ms (faster)
         }
 
         log(`Dynamic element NOT found after ${timeout}ms: ${target}`);
@@ -1462,7 +1462,7 @@ async function advancedElementSearch(target: string, action: 'click' | 'fill', f
             if (deepResult) return true;
 
             if (attempt < maxRetries) {
-                await state.page?.waitForTimeout(1000);
+                await state.page?.waitForTimeout(300); // Reduced wait between retries
             }
         } catch (error: any) {
             // Continue to next attempt
@@ -1543,7 +1543,7 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
                 }, target);
 
                 if (clicked) {
-                    await state.page?.waitForTimeout(800);
+                    await state.page?.waitForTimeout(300);
                     // Detect any newly opened nested windows from this click
                     await detectNewNestedWindows(state.page!).catch(() => {});
                     return true;
@@ -1624,7 +1624,7 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
 
                 if (shadowFound) {
                     log(`Clicked element in shadow DOM`);
-                    await state.page?.waitForTimeout(800);
+                    await state.page?.waitForTimeout(300);
                     return true;
                 }
             } catch (e2_5) {
@@ -1670,7 +1670,7 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
 
                 if (clickedInIframe) {
                     log(`Clicked element in iframe`);
-                    await state.page?.waitForTimeout(800);
+                    await state.page?.waitForTimeout(300);
                     return true;
                 }
             } catch (e3) {
@@ -1690,7 +1690,7 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
                 }, target);
 
                 if (success) {
-                    await state.page?.waitForTimeout(800);
+                    await state.page?.waitForTimeout(300);
                     return true;
                 }
             } catch (e4) {
@@ -1724,7 +1724,7 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
 
                 if (found) {
                     log(`Deep search click succeeded`);
-                    await state.page?.waitForTimeout(800);
+                    await state.page?.waitForTimeout(300);
                     return true;
                 }
             } catch (e5) {
@@ -1732,12 +1732,12 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
             }
 
             if (attempt < maxRetries) {
-                await state.page?.waitForTimeout(1500);
+                await state.page?.waitForTimeout(500); // Reduced wait between retries
             }
 
         } catch (error: any) {
             if (attempt < maxRetries) {
-                await state.page?.waitForTimeout(1500);
+                await state.page?.waitForTimeout(500); // Reduced wait between retries
             }
         }
     }
@@ -1879,7 +1879,7 @@ async function fillWithRetry(target: string, value: string, maxRetries: number =
                     return false;
                 }, { searchText: target, fillValue: value });
                 if (filledInIframe) {
-                    await state.page?.waitForTimeout(500);
+                    await state.page?.waitForTimeout(200);
                     return true;
                 }
             } catch (e5) {
@@ -1997,12 +1997,12 @@ async function fillWithRetry(target: string, value: string, maxRetries: number =
             }
 
             if (attempt < maxRetries) {
-                await state.page?.waitForTimeout(1500);
+                await state.page?.waitForTimeout(500); // Reduced wait between retries
             }
 
         } catch (error: any) {
             if (attempt < maxRetries) {
-                await state.page?.waitForTimeout(1500);
+                await state.page?.waitForTimeout(500); // Reduced wait between retries
             }
         }
     }
