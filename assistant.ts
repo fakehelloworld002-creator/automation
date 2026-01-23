@@ -756,6 +756,59 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
         } catch (e) {
             // Pattern 3 failed
         }
+
+        // PATTERN 4: Search in overlay/modal windows (for elements like "Customer Maintenance", etc)
+        try {
+            const overlaySelectors = [
+                '[role="dialog"]',
+                '[role="alertdialog"]',
+                '.modal',
+                '.overlay',
+                '.dialog',
+                '.popup',
+                '[class*="modal"]',
+                '[class*="overlay"]',
+                '[class*="dialog"]'
+            ];
+            
+            for (const selector of overlaySelectors) {
+                try {
+                    const overlays = await frame.locator(selector).all();
+                    for (const overlay of overlays) {
+                        try {
+                            // Search for clickable elements within this overlay
+                            const overlayElements = await overlay.locator('button, [role="button"], a, [onclick], span[style*="cursor"], div[style*="cursor"]').all();
+                            for (const el of overlayElements) {
+                                try {
+                                    const text = await el.textContent().catch(() => '');
+                                    const title = await el.getAttribute('title').catch(() => '');
+                                    const ariaLabel = await el.getAttribute('aria-label').catch(() => '');
+                                    
+                                    const allText = `${text} ${title} ${ariaLabel}`.toLowerCase();
+                                    
+                                    if (allText.includes(targetLower)) {
+                                        const isVisible = await el.isVisible().catch(() => false);
+                                        if (isVisible) {
+                                            await el.scrollIntoViewIfNeeded();
+                                            await el.click().catch(() => {});
+                                            return true;
+                                        }
+                                    }
+                                } catch (e) {
+                                    // Try next element
+                                }
+                            }
+                        } catch (e) {
+                            // Try next overlay
+                        }
+                    }
+                } catch (e) {
+                    // Selector failed, try next
+                }
+            }
+        } catch (e) {
+            // Pattern 4 failed
+        }
         
     } catch (error: any) {
         // Frame click error
@@ -893,6 +946,66 @@ async function executeFillInFrame(frame: any, target: string, fillValue: string,
                         log(`[FILL] ✓ Pattern 3: Filled field at position ${i} = "${fillValue}"`);
                         return true;
                     } catch (e) {}
+                }
+            }
+        } catch (e) {}
+
+        // PATTERN 4: Search in overlay/modal windows for input fields
+        try {
+            const overlaySelectors = [
+                '[role="dialog"]',
+                '[role="alertdialog"]',
+                '.modal',
+                '.overlay',
+                '.dialog',
+                '[class*="modal"]',
+                '[class*="overlay"]',
+                '[class*="dialog"]'
+            ];
+            
+            for (const selector of overlaySelectors) {
+                try {
+                    const overlays = await frame.locator(selector).all();
+                    for (const overlay of overlays) {
+                        try {
+                            // Search for input fields within overlay
+                            const inputs = await overlay.locator('input, textarea').all();
+                            for (const input of inputs) {
+                                try {
+                                    const title = await input.getAttribute('title').catch(() => '');
+                                    const placeholder = await input.getAttribute('placeholder').catch(() => '');
+                                    const ariaLabel = await input.getAttribute('aria-label').catch(() => '');
+                                    const name = await input.getAttribute('name').catch(() => '');
+                                    const id = await input.getAttribute('id').catch(() => '');
+                                    
+                                    const allAttrs = `${title} ${placeholder} ${ariaLabel} ${name} ${id}`.toLowerCase();
+                                    
+                                    if (allAttrs.includes(target.toLowerCase())) {
+                                        try {
+                                            await input.scrollIntoViewIfNeeded();
+                                            await input.waitForElementState('visible', {timeout: 3000}).catch(() => {});
+                                            await input.click({force: true});
+                                            await input.selectText().catch(() => {});
+                                            await input.fill(fillValue, {timeout: 5000});
+                                            await input.dispatchEvent('input');
+                                            await input.dispatchEvent('change');
+                                            await input.dispatchEvent('blur');
+                                            log(`[FILL] ✓ Pattern 4: Successfully filled field in overlay "${title || name || id}" = "${fillValue}"`);
+                                            return true;
+                                        } catch (e: any) {
+                                            // Try next input
+                                        }
+                                    }
+                                } catch (e) {
+                                    // Try next input
+                                }
+                            }
+                        } catch (e) {
+                            // Try next overlay
+                        }
+                    }
+                } catch (e) {
+                    // Selector failed, try next
                 }
             }
         } catch (e) {}
@@ -1522,6 +1635,35 @@ async function getAllPageElements(): Promise<any[]> {
             let elementIndex = 0;
 
             try {
+                // Helper: Check if element is inside a modal/overlay
+                const getOverlayContext = (el: Element): string => {
+                    let parent = el.parentElement;
+                    let depth = 0;
+                    while (parent && depth < 10) {
+                        const className = parent.getAttribute('class') || '';
+                        const id = parent.getAttribute('id') || '';
+                        const role = parent.getAttribute('role') || '';
+                        
+                        // Check for common modal/overlay indicators
+                        if (className.includes('modal') || className.includes('overlay') || className.includes('dialog') ||
+                            className.includes('popup') || className.includes('window') ||
+                            id.includes('modal') || id.includes('overlay') || id.includes('dialog') ||
+                            role === 'dialog' || role === 'alertdialog') {
+                            return `[OVERLAY: ${id || className.split(' ')[0]}]`;
+                        }
+                        
+                        // Check for fixed/absolute positioning that suggests overlay
+                        const style = window.getComputedStyle(parent);
+                        if (style.position === 'fixed' && style.zIndex && parseInt(style.zIndex) > 1000) {
+                            return `[OVERLAY: fixed-zindex-${style.zIndex}]`;
+                        }
+                        
+                        parent = parent.parentElement;
+                        depth++;
+                    }
+                    return '';
+                };
+
                 // Helper: Find associated label text for an element - COMPREHENSIVE SEARCH
                 const getAssociatedLabel = (el: Element): string => {
                     const id = el.getAttribute('id');
@@ -1773,6 +1915,192 @@ async function getAllPageElements(): Promise<any[]> {
                     }
                 });
 
+                // ===== DETECT OVERLAY WINDOWS / MODALS / DIALOGS =====
+                // These are windows that appear on top of main content
+                const detectOverlayElements = () => {
+                    // Look for elements with modal/dialog indicators
+                    const overlaySelectors = [
+                        '[role="dialog"]',
+                        '[role="alertdialog"]',
+                        '.modal',
+                        '.overlay',
+                        '.dialog',
+                        '.popup',
+                        '.window',
+                        '[class*="modal"]',
+                        '[class*="overlay"]',
+                        '[class*="dialog"]',
+                        '[class*="popup"]',
+                        '[class*="window"]',
+                        '[style*="position: fixed"][style*="z-index"]',
+                        '[style*="position: absolute"][style*="z-index"]'
+                    ];
+
+                    const overlayElements = new Set<Element>();
+                    
+                    for (const selector of overlaySelectors) {
+                        try {
+                            const elements = document.querySelectorAll(selector);
+                            for (const el of Array.from(elements)) {
+                                overlayElements.add(el);
+                            }
+                        } catch (e) {
+                            // Invalid selector, continue
+                        }
+                    }
+                    
+                    return Array.from(overlayElements);
+                };
+
+                const overlayContainers = detectOverlayElements();
+                
+                for (const overlayContainer of overlayContainers) {
+                    try {
+                        // Get all interactive elements within this overlay
+                        const allOverlayElements = overlayContainer.querySelectorAll('*');
+                        
+                        for (const el of Array.from(allOverlayElements)) {
+                            try {
+                                const tagName = el.tagName?.toLowerCase() || '';
+                                
+                                // Skip script, style tags
+                                if (['script', 'style', 'meta', 'link', 'noscript', 'head', 'html', 'body'].includes(tagName)) {
+                                    continue;
+                                }
+                                
+                                const id = el.getAttribute('id') || '';
+                                const name = el.getAttribute('name') || '';
+                                const className = el.getAttribute('class') || '';
+                                const type = el.getAttribute('type') || '';
+                                const placeholder = el.getAttribute('placeholder') || '';
+                                const textContent = el.textContent?.trim().substring(0, 150) || '';
+                                const ariaLabel = el.getAttribute('aria-label') || '';
+                                const title = el.getAttribute('title') || '';
+                                const role = el.getAttribute('role') || '';
+                                
+                                // Get element visibility
+                                const style = window.getComputedStyle(el);
+                                const isVisible = style.display !== 'none' && 
+                                                style.visibility !== 'hidden' && 
+                                                style.opacity !== '0' &&
+                                                (el as any).offsetWidth > 0 &&
+                                                (el as any).offsetHeight > 0;
+                                
+                                // Skip hidden or very small elements
+                                if (!isVisible) continue;
+                                
+                                // Determine element type
+                                let elementType = '';
+                                let isInteractive = false;
+                                let priority = 11; // Higher priority than main page
+                                
+                                if (tagName === 'input') {
+                                    elementType = type || 'input';
+                                    isInteractive = true;
+                                    priority = 11;
+                                } else if (tagName === 'button') {
+                                    elementType = 'button';
+                                    isInteractive = true;
+                                    priority = 11;
+                                } else if (tagName === 'a') {
+                                    elementType = 'link';
+                                    isInteractive = true;
+                                    priority = 11;
+                                } else if (tagName === 'select') {
+                                    elementType = 'select';
+                                    isInteractive = true;
+                                    priority = 11;
+                                } else if (tagName === 'textarea') {
+                                    elementType = 'textarea';
+                                    isInteractive = true;
+                                    priority = 11;
+                                } else if (role === 'button' || role === 'tab' || role === 'menuitem') {
+                                    elementType = role;
+                                    isInteractive = true;
+                                    priority = 11;
+                                } else if ((el as any).onclick !== null || style.cursor === 'pointer') {
+                                    elementType = 'clickable';
+                                    isInteractive = true;
+                                    priority = 11;
+                                } else if (textContent && textContent.length > 3 && (tagName === 'span' || tagName === 'div' || tagName === 'p' || tagName === 'label')) {
+                                    elementType = 'text-' + tagName;
+                                    priority = 8;
+                                } else {
+                                    continue; // Skip other elements
+                                }
+                                
+                                // Get display name
+                                const displayName = getDisplayName(el, tagName, textContent, placeholder, ariaLabel);
+                                
+                                // Skip elements without a meaningful name
+                                if (!displayName && !id && !name && !title) {
+                                    continue;
+                                }
+                                
+                                // Create unique identifier
+                                const uniqueKey = `overlay:${tagName}:${displayName}:${id}:${name}`;
+                                
+                                // Avoid duplicates
+                                if (seen.has(uniqueKey)) {
+                                    continue;
+                                }
+                                seen.add(uniqueKey);
+                                
+                                // Get element position
+                                const rect = el.getBoundingClientRect();
+                                
+                                // Use display name as primary label
+                                const label = displayName || title || id || name || `${elementType}_${elementIndex}`;
+                                
+                                // Determine overlay type
+                                const overlayId = overlayContainer.getAttribute('id') || '';
+                                const overlayClass = overlayContainer.getAttribute('class') || '';
+                                const overlayRole = overlayContainer.getAttribute('role') || '';
+                                
+                                let overlayType = 'modal';
+                                if (overlayRole === 'alertdialog') overlayType = 'alert';
+                                else if (overlayClass.includes('popup')) overlayType = 'popup';
+                                else if (overlayClass.includes('window')) overlayType = 'window';
+                                else if (overlayClass.includes('overlay')) overlayType = 'overlay';
+                                
+                                items.push({
+                                    index: elementIndex,
+                                    type: elementType,
+                                    tag: tagName,
+                                    id,
+                                    name,
+                                    class: className,
+                                    placeholder,
+                                    text: textContent,
+                                    ariaLabel,
+                                    title,
+                                    role,
+                                    visible: isVisible,
+                                    interactive: isInteractive,
+                                    label: label,
+                                    displayName: displayName,
+                                    priority,
+                                    location: `overlay[${overlayType}]`,
+                                    overlayId: overlayId,
+                                    overlayType: overlayType,
+                                    position: {
+                                        top: Math.round(rect.top),
+                                        left: Math.round(rect.left),
+                                        width: Math.round(rect.width),
+                                        height: Math.round(rect.height)
+                                    }
+                                });
+                                
+                                elementIndex++;
+                            } catch (e) {
+                                // Skip this element
+                            }
+                        }
+                    } catch (e) {
+                        // Skip this overlay container
+                    }
+                }
+
                 // NOW SEARCH IN IFRAMES
                 const iframes = document.querySelectorAll('iframe');
                 for (const iframe of Array.from(iframes)) {
@@ -1875,11 +2203,130 @@ async function getAllPageElements(): Promise<any[]> {
                         // Cross-origin iframe - skip
                     }
                 }
+
+                // ===== DETECT ELEMENTS IN SHADOW DOM =====
+                // Shadow DOM is used by Web Components and some libraries
+                const collectShadowDOMElements = (rootElement: Element, depth: number = 0): void => {
+                    if (depth > 5) return; // Limit recursion depth
+                    
+                    try {
+                        const allElements = rootElement.querySelectorAll('*');
+                        for (const el of Array.from(allElements)) {
+                            if ((el as any).shadowRoot) {
+                                try {
+                                    const shadowElements = (el as any).shadowRoot.querySelectorAll('*');
+                                    for (const shadowElRaw of Array.from(shadowElements)) {
+                                        const shadowEl = shadowElRaw as Element;
+                                        try {
+                                            const tagName = shadowEl.tagName?.toLowerCase() || '';
+                                            if (['script', 'style', 'meta', 'link', 'noscript', 'head', 'html'].includes(tagName)) {
+                                                continue;
+                                            }
+                                            
+                                            const id = shadowEl.getAttribute('id') || '';
+                                            const name = shadowEl.getAttribute('name') || '';
+                                            const className = shadowEl.getAttribute('class') || '';
+                                            const type = shadowEl.getAttribute('type') || '';
+                                            const placeholder = shadowEl.getAttribute('placeholder') || '';
+                                            const textContent = shadowEl.textContent?.trim().substring(0, 150) || '';
+                                            const ariaLabel = shadowEl.getAttribute('aria-label') || '';
+                                            const title = shadowEl.getAttribute('title') || '';
+                                            const role = shadowEl.getAttribute('role') || '';
+                                            
+                                            const style = window.getComputedStyle(shadowEl);
+                                            const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' &&
+                                                            (shadowEl as any).offsetWidth > 0 && (shadowEl as any).offsetHeight > 0;
+                                            
+                                            if (!isVisible) continue;
+                                            
+                                            let elementType = '';
+                                            let isInteractive = false;
+                                            
+                                            if (tagName === 'input') {
+                                                elementType = type || 'input';
+                                                isInteractive = true;
+                                            } else if (tagName === 'button') {
+                                                elementType = 'button';
+                                                isInteractive = true;
+                                            } else if (tagName === 'a') {
+                                                elementType = 'link';
+                                                isInteractive = true;
+                                            } else if (tagName === 'select') {
+                                                elementType = 'select';
+                                                isInteractive = true;
+                                            } else if (role === 'button' || role === 'tab') {
+                                                elementType = role;
+                                                isInteractive = true;
+                                            } else if ((shadowEl as any).onclick !== null || style.cursor === 'pointer') {
+                                                elementType = 'clickable';
+                                                isInteractive = true;
+                                            } else if (textContent && textContent.length > 3) {
+                                                elementType = 'text-' + tagName;
+                                            } else {
+                                                continue;
+                                            }
+                                            
+                                            const displayName = getDisplayName(shadowEl, tagName, textContent, placeholder, ariaLabel);
+                                            if (!displayName && !id && !name && !title) continue;
+                                            
+                                            const uniqueKey = `shadow:${tagName}:${displayName}:${id}:${name}`;
+                                            if (seen.has(uniqueKey)) continue;
+                                            seen.add(uniqueKey);
+                                            
+                                            const rect = shadowEl.getBoundingClientRect();
+                                            const label = displayName || title || id || name || `${elementType}_${elementIndex}`;
+                                            
+                                            items.push({
+                                                index: elementIndex,
+                                                type: elementType,
+                                                tag: tagName,
+                                                id,
+                                                name,
+                                                class: className,
+                                                placeholder,
+                                                text: textContent,
+                                                ariaLabel,
+                                                title,
+                                                role,
+                                                visible: isVisible,
+                                                interactive: isInteractive,
+                                                label: label,
+                                                displayName: displayName,
+                                                priority: 10,
+                                                location: 'shadow-dom',
+                                                position: {
+                                                    top: Math.round(rect.top),
+                                                    left: Math.round(rect.left),
+                                                    width: Math.round(rect.width),
+                                                    height: Math.round(rect.height)
+                                                }
+                                            });
+                                            
+                                            elementIndex++;
+                                        } catch (e) {
+                                            // Skip shadow element
+                                        }
+                                    }
+                                    
+                                    // Recursively check shadow DOM elements for nested shadow roots
+                                    collectShadowDOMElements(el, depth + 1);
+                                } catch (e) {
+                                    // Can't access shadow root
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        // Skip shadow DOM collection
+                    }
+                };
+                
+                collectShadowDOMElements(document.documentElement);
+
             } catch (error) {
                 return items;
             }
 
-            return items.slice(0, 300); // Increased limit to 300 for more results
+            return items.slice(0, 500); // Increased limit to 500 to include overlay and shadow elements
         });
         
         if (!elements || !Array.isArray(elements)) {
@@ -1887,7 +2334,7 @@ async function getAllPageElements(): Promise<any[]> {
             return [];
         }
 
-        log(`Found ${elements.length} page elements (including ${elements.filter((e: any) => e.location === 'iframe').length} in iframes)`);
+        log(`Found ${elements.length} page elements (iframe: ${elements.filter((e: any) => e.location === 'iframe').length}, overlay: ${elements.filter((e: any) => e.location?.includes('overlay')).length}, shadow-dom: ${elements.filter((e: any) => e.location === 'shadow-dom').length})`);
         return elements;
     } catch (e: any) {
         log(`Failed to get elements: ${e.message || e}`);

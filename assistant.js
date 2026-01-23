@@ -693,6 +693,59 @@ async function executeClickInFrame(frame, target, framePath) {
         catch (e) {
             // Pattern 3 failed
         }
+        // PATTERN 4: Search in overlay/modal windows (for elements like "Customer Maintenance", etc)
+        try {
+            const overlaySelectors = [
+                '[role="dialog"]',
+                '[role="alertdialog"]',
+                '.modal',
+                '.overlay',
+                '.dialog',
+                '.popup',
+                '[class*="modal"]',
+                '[class*="overlay"]',
+                '[class*="dialog"]'
+            ];
+            for (const selector of overlaySelectors) {
+                try {
+                    const overlays = await frame.locator(selector).all();
+                    for (const overlay of overlays) {
+                        try {
+                            // Search for clickable elements within this overlay
+                            const overlayElements = await overlay.locator('button, [role="button"], a, [onclick], span[style*="cursor"], div[style*="cursor"]').all();
+                            for (const el of overlayElements) {
+                                try {
+                                    const text = await el.textContent().catch(() => '');
+                                    const title = await el.getAttribute('title').catch(() => '');
+                                    const ariaLabel = await el.getAttribute('aria-label').catch(() => '');
+                                    const allText = `${text} ${title} ${ariaLabel}`.toLowerCase();
+                                    if (allText.includes(targetLower)) {
+                                        const isVisible = await el.isVisible().catch(() => false);
+                                        if (isVisible) {
+                                            await el.scrollIntoViewIfNeeded();
+                                            await el.click().catch(() => { });
+                                            return true;
+                                        }
+                                    }
+                                }
+                                catch (e) {
+                                    // Try next element
+                                }
+                            }
+                        }
+                        catch (e) {
+                            // Try next overlay
+                        }
+                    }
+                }
+                catch (e) {
+                    // Selector failed, try next
+                }
+            }
+        }
+        catch (e) {
+            // Pattern 4 failed
+        }
     }
     catch (error) {
         // Frame click error
@@ -826,6 +879,67 @@ async function executeFillInFrame(frame, target, fillValue, framePath) {
             }
         }
         catch (e) { }
+        // PATTERN 4: Search in overlay/modal windows for input fields
+        try {
+            const overlaySelectors = [
+                '[role="dialog"]',
+                '[role="alertdialog"]',
+                '.modal',
+                '.overlay',
+                '.dialog',
+                '[class*="modal"]',
+                '[class*="overlay"]',
+                '[class*="dialog"]'
+            ];
+            for (const selector of overlaySelectors) {
+                try {
+                    const overlays = await frame.locator(selector).all();
+                    for (const overlay of overlays) {
+                        try {
+                            // Search for input fields within overlay
+                            const inputs = await overlay.locator('input, textarea').all();
+                            for (const input of inputs) {
+                                try {
+                                    const title = await input.getAttribute('title').catch(() => '');
+                                    const placeholder = await input.getAttribute('placeholder').catch(() => '');
+                                    const ariaLabel = await input.getAttribute('aria-label').catch(() => '');
+                                    const name = await input.getAttribute('name').catch(() => '');
+                                    const id = await input.getAttribute('id').catch(() => '');
+                                    const allAttrs = `${title} ${placeholder} ${ariaLabel} ${name} ${id}`.toLowerCase();
+                                    if (allAttrs.includes(target.toLowerCase())) {
+                                        try {
+                                            await input.scrollIntoViewIfNeeded();
+                                            await input.waitForElementState('visible', { timeout: 3000 }).catch(() => { });
+                                            await input.click({ force: true });
+                                            await input.selectText().catch(() => { });
+                                            await input.fill(fillValue, { timeout: 5000 });
+                                            await input.dispatchEvent('input');
+                                            await input.dispatchEvent('change');
+                                            await input.dispatchEvent('blur');
+                                            log(`[FILL] ✓ Pattern 4: Successfully filled field in overlay "${title || name || id}" = "${fillValue}"`);
+                                            return true;
+                                        }
+                                        catch (e) {
+                                            // Try next input
+                                        }
+                                    }
+                                }
+                                catch (e) {
+                                    // Try next input
+                                }
+                            }
+                        }
+                        catch (e) {
+                            // Try next overlay
+                        }
+                    }
+                }
+                catch (e) {
+                    // Selector failed, try next
+                }
+            }
+        }
+        catch (e) { }
     }
     catch (error) {
         log(`[FILL] Frame error: ${error.message}`);
@@ -938,223 +1052,480 @@ async function advancedElementSearch(target, action, fillValue, maxRetries = 3) 
     }
     return false;
 }
-/**
- * SIMPLIFIED CLICK - Single comprehensive search, NO infinite loops
- * Searches: Main page → All iframes → All popup windows
- * If found: click it and return true
- * If NOT found: return false and move to next step (NO RETRIES)
- */
-async function clickWithRetry(target, maxRetries = 1) {
-    if (!state.page || state.page.isClosed())
-        return false;
-    log(`[CLICK SEARCH] Looking for: "${target}"`);
-    try {
-        // Search 1: Main page visible clickables
-        const mainPageClicked = await state.page.evaluate((searchText) => {
-            const searchLower = searchText.toLowerCase();
-            const clickables = document.querySelectorAll('button, a, [role="button"], [role="tab"], input[type="button"]');
-            for (const el of Array.from(clickables)) {
-                const text = el.textContent?.toLowerCase() || '';
-                const ariaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
-                const title = el.getAttribute('title')?.toLowerCase() || '';
-                if (text.includes(searchLower) || ariaLabel.includes(searchLower) || title.includes(searchLower)) {
-                    const rect = el.getBoundingClientRect();
-                    const style = window.getComputedStyle(el);
-                    if (rect.width > 0 && rect.height > 0 &&
-                        style.display !== 'none' && style.visibility !== 'hidden') {
-                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        el.click();
+async function clickWithRetry(target, maxRetries = 5) {
+    // FIRST: Ensure page is fully loaded before attempting to find elements
+    await waitForPageReady();
+    // SECOND: Try advanced search (handles cross-origin, nested iframes, and dynamic elements)
+    const advancedResult = await advancedElementSearch(target, 'click', undefined, 2);
+    if (advancedResult) {
+        return true;
+    }
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            // Check if page is still valid before attempting
+            if (!state.page || state.page.isClosed()) {
+                await switchToLatestPage();
+                if (!state.page || state.page.isClosed()) {
+                    return false;
+                }
+            }
+            // Strategy 0: Handle visible modals/overlays - DIRECTLY CLICK visible elements
+            try {
+                const clicked = await state.page?.evaluate((searchText) => {
+                    // Find all visible elements matching text - INCLUDING in modals/overlays
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of Array.from(allElements)) {
+                        if (el.textContent?.includes(searchText)) {
+                            const style = window.getComputedStyle(el);
+                            // Check if visible (not hidden, not display none, not visibility hidden)
+                            if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                                if (el.tagName === 'BUTTON' ||
+                                    el.tagName === 'A' ||
+                                    el.getAttribute('role') === 'button' ||
+                                    el.getAttribute('role') === 'tab' ||
+                                    el.getAttribute('onclick') !== null ||
+                                    (el.tagName === 'INPUT' && el.getAttribute('type') === 'button')) {
+                                    const rect = el.getBoundingClientRect();
+                                    // Only consider elements that are actually visible
+                                    if (rect.width > 0 && rect.height > 0) {
+                                        // ONLY scroll if element is outside viewport
+                                        if (rect.top < 0 || rect.bottom > window.innerHeight) {
+                                            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                        }
+                                        // DIRECTLY CLICK - don't just focus
+                                        el.click();
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return false;
+                }, target);
+                if (clicked) {
+                    await state.page?.waitForTimeout(800);
+                    return true;
+                }
+            }
+            catch (e0) {
+                // Modal strategy failed, continue
+            }
+            // Strategy 1: Try direct selector without scrolling first
+            try {
+                await state.page?.click(target, { timeout: 1500 });
+                return true;
+            }
+            catch (e1) {
+                // If not found, try with scroll as fallback
+                try {
+                    await scrollToElement(target);
+                    await state.page?.click(target, { timeout: 3000 });
+                    return true;
+                }
+                catch (e1b) {
+                    // Direct selector failed
+                }
+            }
+            // Strategy 2: Find by text and click
+            try {
+                log(`Searching for text: ${target}`);
+                const scrollSuccess = await scrollToElementByText(target);
+                if (scrollSuccess) {
+                    const buttonSelector = await findButtonByText(target);
+                    if (buttonSelector) {
+                        log(`Found button by text: ${buttonSelector}`);
+                        await state.page?.click(buttonSelector, { timeout: 3000 });
+                        log(`Clicked by text matching`);
                         return true;
                     }
                 }
             }
-            return false;
-        }, target);
-        if (mainPageClicked) {
-            log(`✓ Found and clicked on main page`);
-            await state.page.waitForTimeout(500);
-            return true;
-        }
-        // Search 2: All iframes
-        const iframeClicked = await state.page.evaluate((searchText) => {
-            const searchLower = searchText.toLowerCase();
-            const iframes = document.querySelectorAll('iframe');
-            for (const iframe of Array.from(iframes)) {
-                try {
-                    const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
-                    if (!iframeDoc)
-                        continue;
-                    const clickables = iframeDoc.querySelectorAll('button, a, [role="button"], [role="tab"], input[type="button"]');
-                    for (const el of Array.from(clickables)) {
-                        const htmlEl = el;
-                        const text = htmlEl.textContent?.toLowerCase() || '';
-                        const ariaLabel = htmlEl.getAttribute('aria-label')?.toLowerCase() || '';
-                        const title = htmlEl.getAttribute('title')?.toLowerCase() || '';
-                        if (text.includes(searchLower) || ariaLabel.includes(searchLower) || title.includes(searchLower)) {
-                            htmlEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            htmlEl.click();
+            catch (e2) {
+                log(`Text matching failed`);
+            }
+            // Strategy 2.5: Shadow DOM and nested element search
+            try {
+                log(`Searching through Shadow DOM and nested elements...`);
+                const shadowFound = await state.page?.evaluate((searchText) => {
+                    // Walk through all elements including shadow DOM
+                    const walk = (node) => {
+                        if (node.nodeType === 1) { // Element node
+                            const el = node;
+                            if (el.textContent?.includes(searchText) && (el.tagName === 'BUTTON' ||
+                                el.tagName === 'A' ||
+                                el.getAttribute('role') === 'button' ||
+                                el.getAttribute('role') === 'tab' ||
+                                el.getAttribute('onclick') !== null)) {
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
+                                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                            // Check shadow root
+                            if (el.shadowRoot) {
+                                if (walk(el.shadowRoot))
+                                    return true;
+                            }
+                        }
+                        // Walk children
+                        for (let child of node.childNodes) {
+                            if (walk(child))
+                                return true;
+                        }
+                        return false;
+                    };
+                    return walk(document);
+                }, target);
+                if (shadowFound) {
+                    log(`Clicked element in shadow DOM`);
+                    await state.page?.waitForTimeout(800);
+                    return true;
+                }
+            }
+            catch (e2_5) {
+                log(`Shadow DOM search failed`);
+            }
+            // Strategy 3: Search in iframes (PRIORITIZED - do this FIRST)
+            try {
+                log(`Searching in iframes for: ${target}...`);
+                const clickedInIframe = await state.page?.evaluate((searchText) => {
+                    const iframes = document.querySelectorAll('iframe');
+                    for (const iframe of Array.from(iframes)) {
+                        try {
+                            const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+                            if (iframeDoc) {
+                                // Search for ANY element matching the text in iframe
+                                const allElements = iframeDoc.querySelectorAll('*');
+                                for (const el of Array.from(allElements)) {
+                                    const element = el;
+                                    const text = element.textContent || '';
+                                    const isClickable = element.tagName === 'BUTTON' ||
+                                        element.tagName === 'A' ||
+                                        element.getAttribute('role') === 'button' ||
+                                        element.getAttribute('onclick') !== null ||
+                                        element.getAttribute('role') === 'tab';
+                                    if (text.toLowerCase().includes(searchText.toLowerCase()) && isClickable) {
+                                        const rect = element.getBoundingClientRect();
+                                        if (rect.width > 0 && rect.height > 0) {
+                                            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                            element.click();
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch (e) {
+                            // Cross-origin iframe
+                        }
+                    }
+                    return false;
+                }, target);
+                if (clickedInIframe) {
+                    log(`Clicked element in iframe`);
+                    await state.page?.waitForTimeout(800);
+                    return true;
+                }
+            }
+            catch (e3) {
+                log(`Iframe click failed`);
+            }
+            // Strategy 4: Force JavaScript click after scrolling
+            try {
+                await scrollToElementByText(target);
+                const success = await state.page?.evaluate((sel) => {
+                    const element = document.querySelector(sel);
+                    if (element) {
+                        element.click();
+                        return true;
+                    }
+                    return false;
+                }, target);
+                if (success) {
+                    await state.page?.waitForTimeout(800);
+                    return true;
+                }
+            }
+            catch (e4) {
+                // Force click failed
+            }
+            // Strategy 5: Search all clickable elements on page
+            try {
+                log(`Deep searching all clickable elements...`);
+                const found = await state.page?.evaluate((searchText) => {
+                    // Scroll to top first
+                    window.scrollTo(0, 0);
+                    // Deep search all possible elements
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of Array.from(allElements)) {
+                        const text = el.textContent || '';
+                        if (text.includes(searchText) && (el.tagName === 'BUTTON' ||
+                            el.tagName === 'A' ||
+                            el.getAttribute('role') === 'button' ||
+                            (el.tagName === 'INPUT' && el.getAttribute('type') === 'button'))) {
+                            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            el.click();
                             return true;
                         }
                     }
-                }
-                catch (e) {
-                    // Cross-origin iframe
+                    return false;
+                }, target);
+                if (found) {
+                    log(`Deep search click succeeded`);
+                    await state.page?.waitForTimeout(800);
+                    return true;
                 }
             }
-            return false;
-        }, target);
-        if (iframeClicked) {
-            log(`✓ Found and clicked in iframe`);
-            await state.page.waitForTimeout(500);
-            return true;
+            catch (e5) {
+                log(`Deep search failed`);
+            }
+            if (attempt < maxRetries) {
+                await state.page?.waitForTimeout(1500);
+            }
         }
-        // Search 3: All popup windows
-        for (const popup of allPages) {
-            if (popup && !popup.isClosed()) {
+        catch (error) {
+            if (attempt < maxRetries) {
+                await state.page?.waitForTimeout(1500);
+            }
+        }
+    }
+    return false;
+}
+async function fillWithRetry(target, value, maxRetries = 5) {
+    // FIRST: Ensure page is fully loaded before attempting to find elements
+    await waitForPageReady();
+    // SECOND: Try advanced search (handles cross-origin, nested iframes, and dynamic elements)
+    const advancedResult = await advancedElementSearch(target, 'fill', value, 2);
+    if (advancedResult) {
+        return true;
+    }
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            // Check if page is still valid before attempting
+            if (!state.page || state.page.isClosed()) {
+                log(`Page closed during fill attempt, recovering...`);
+                await switchToLatestPage();
+                if (!state.page || state.page.isClosed()) {
+                    return false;
+                }
+            }
+            // Strategy 0: Direct selector fill (if target is a CSS selector)
+            if (target.startsWith('[') || target.startsWith('#') || target.startsWith('.') || target.includes('>')) {
                 try {
-                    const popupClicked = await popup.evaluate((searchText) => {
-                        const searchLower = searchText.toLowerCase();
-                        const clickables = document.querySelectorAll('button, a, [role="button"], [role="tab"], input[type="button"]');
-                        for (const el of Array.from(clickables)) {
-                            const text = el.textContent?.toLowerCase() || '';
-                            const ariaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
-                            if (text.includes(searchLower) || ariaLabel.includes(searchLower)) {
-                                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                el.click();
+                    await state.page?.fill(target, value, { timeout: 2000 });
+                    return true;
+                }
+                catch (e0) {
+                    // Direct selector failed
+                }
+            }
+            // Strategy 0.5: Find visible input in modals/overlays
+            try {
+                const filled = await state.page?.evaluate(({ searchText, value: fillValue }) => {
+                    const allInputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+                    for (const input of Array.from(allInputs)) {
+                        const el = input;
+                        const style = window.getComputedStyle(el);
+                        const placeholder = input.placeholder || '';
+                        const label = input.getAttribute('aria-label') || '';
+                        const id = input.id || '';
+                        const name = input.name || '';
+                        // Check if visible and matches search text
+                        if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                            (placeholder.toLowerCase().includes(searchText.toLowerCase()) ||
+                                label.toLowerCase().includes(searchText.toLowerCase()) ||
+                                id.toLowerCase().includes(searchText.toLowerCase()) ||
+                                name.toLowerCase().includes(searchText.toLowerCase()))) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                // ONLY scroll if element is outside viewport
+                                if (rect.top < 0 || rect.bottom > window.innerHeight) {
+                                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }
+                                input.value = fillValue;
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                                input.dispatchEvent(new Event('change', { bubbles: true }));
+                                input.dispatchEvent(new Event('blur', { bubbles: true }));
                                 return true;
                             }
                         }
-                        return false;
-                    }, target);
-                    if (popupClicked) {
-                        log(`✓ Found and clicked in popup`);
-                        await popup.waitForTimeout(500);
-                        return true;
                     }
-                }
-                catch (e) {
-                    // Popup error
+                    return false;
+                }, { searchText: target, value });
+                if (filled) {
+                    return true;
                 }
             }
-        }
-        log(`✗ Element not found anywhere: "${target}"`);
-        return false;
-    }
-    catch (error) {
-        log(`[CLICK ERROR] ${error.message}`);
-        return false;
-    }
-}
-async function fillWithRetry(target, value, maxRetries = 1) {
-    if (!state.page || state.page.isClosed())
-        return false;
-    log(`[FILL SEARCH] Looking for input: "${target}"`);
-    try {
-        // Search 1: Main page inputs
-        const mainPageFilled = await state.page.evaluate(({ searchText, fillValue }) => {
-            const searchLower = searchText.toLowerCase();
-            const inputs = document.querySelectorAll('input, textarea');
-            for (const input of Array.from(inputs)) {
-                const inputEl = input;
-                const placeholder = input.placeholder?.toLowerCase() || '';
-                const label = inputEl.getAttribute('aria-label')?.toLowerCase() || '';
-                const id = inputEl.getAttribute('id')?.toLowerCase() || '';
-                const name = inputEl.getAttribute('name')?.toLowerCase() || '';
-                if (placeholder.includes(searchLower) || label.includes(searchLower) ||
-                    id.includes(searchLower) || name.includes(searchLower)) {
-                    const rect = inputEl.getBoundingClientRect();
-                    const style = window.getComputedStyle(input);
-                    if (rect.width > 0 && rect.height > 0 &&
-                        style.display !== 'none' && style.visibility !== 'hidden' &&
-                        !input.disabled) {
-                        inputEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        input.value = fillValue;
-                        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-                        return true;
-                    }
-                }
+            catch (e0) {
+                // Modal input search failed
             }
-            return false;
-        }, { searchText: target, fillValue: value });
-        if (mainPageFilled) {
-            log(`✓ Found and filled input on main page`);
-            await state.page.waitForTimeout(300);
-            return true;
-        }
-        // Search 2: All iframes
-        const iframeFilled = await state.page.evaluate(({ searchText, fillValue }) => {
-            const searchLower = searchText.toLowerCase();
-            const iframes = document.querySelectorAll('iframe');
-            for (const iframe of Array.from(iframes)) {
-                try {
-                    const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
-                    if (!iframeDoc)
-                        continue;
-                    const inputs = iframeDoc.querySelectorAll('input, textarea');
-                    for (const input of Array.from(inputs)) {
-                        const inputEl = input;
-                        const placeholder = input.placeholder?.toLowerCase() || '';
-                        const label = inputEl.getAttribute('aria-label')?.toLowerCase() || '';
-                        const id = inputEl.getAttribute('id')?.toLowerCase() || '';
-                        const name = inputEl.getAttribute('name')?.toLowerCase() || '';
-                        if (placeholder.includes(searchLower) || label.includes(searchLower) ||
-                            id.includes(searchLower) || name.includes(searchLower)) {
-                            input.value = fillValue;
-                            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                            inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-                            return true;
+            // Strategy 1: Fill in iframes FIRST (most important)
+            try {
+                const filledInIframe = await state.page?.evaluate(({ searchText, fillValue }) => {
+                    const iframes = document.querySelectorAll('iframe');
+                    for (const iframe of Array.from(iframes)) {
+                        try {
+                            const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+                            if (iframeDoc) {
+                                const inputs = iframeDoc.querySelectorAll('input, textarea');
+                                for (const input of inputs) {
+                                    const placeholder = input.placeholder || '';
+                                    const label = input.getAttribute('aria-label') || '';
+                                    const id = input.id || '';
+                                    const name = input.name || '';
+                                    const value = input.value || '';
+                                    if (placeholder.toLowerCase().includes(searchText.toLowerCase()) ||
+                                        label.toLowerCase().includes(searchText.toLowerCase()) ||
+                                        id.toLowerCase().includes(searchText.toLowerCase()) ||
+                                        name.toLowerCase().includes(searchText.toLowerCase()) ||
+                                        value.toLowerCase().includes(searchText.toLowerCase())) {
+                                        input.focus();
+                                        input.value = fillValue;
+                                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                                        input.dispatchEvent(new Event('blur', { bubbles: true }));
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                        catch (e) {
+                            // Cross-origin iframe
                         }
                     }
-                }
-                catch (e) {
-                    // Cross-origin iframe
+                    return false;
+                }, { searchText: target, fillValue: value });
+                if (filledInIframe) {
+                    await state.page?.waitForTimeout(500);
+                    return true;
                 }
             }
-            return false;
-        }, { searchText: target, fillValue: value });
-        if (iframeFilled) {
-            log(`✓ Found and filled input in iframe`);
-            await state.page.waitForTimeout(300);
-            return true;
-        }
-        // Search 3: All popup windows
-        for (const popup of allPages) {
-            if (popup && !popup.isClosed()) {
-                try {
-                    const popupFilled = await popup.evaluate(({ searchText, fillValue }) => {
-                        const searchLower = searchText.toLowerCase();
-                        const inputs = document.querySelectorAll('input, textarea');
-                        for (const input of Array.from(inputs)) {
-                            const placeholder = input.placeholder?.toLowerCase() || '';
-                            const label = input.getAttribute('aria-label')?.toLowerCase() || '';
-                            if (placeholder.includes(searchLower) || label.includes(searchLower)) {
+            catch (e5) {
+                // Iframe fill attempt failed
+            }
+            // Strategy 2: Find by text pattern and fill any input
+            try {
+                const foundAndFilled = await state.page?.evaluate(({ searchText, fillValue }) => {
+                    // Search for any element containing the text
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of Array.from(allElements)) {
+                        const text = el.textContent || '';
+                        if (text.toLowerCase().includes(searchText.toLowerCase())) {
+                            // Look for nearby input
+                            const inputs = el.querySelectorAll('input, textarea');
+                            if (inputs.length > 0) {
+                                const input = inputs[0];
                                 input.value = fillValue;
                                 input.dispatchEvent(new Event('input', { bubbles: true }));
                                 input.dispatchEvent(new Event('change', { bubbles: true }));
                                 return true;
                             }
+                            // Check parent for input
+                            let parent = el.parentElement;
+                            for (let i = 0; i < 5; i++) {
+                                if (!parent)
+                                    break;
+                                const parentInputs = parent.querySelectorAll('input, textarea');
+                                if (parentInputs.length > 0) {
+                                    const input = parentInputs[0];
+                                    input.value = fillValue;
+                                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                                    return true;
+                                }
+                                parent = parent.parentElement;
+                            }
                         }
-                        return false;
-                    }, { searchText: target, fillValue: value });
-                    if (popupFilled) {
-                        log(`✓ Found and filled input in popup`);
-                        await popup.waitForTimeout(300);
-                        return true;
                     }
-                }
-                catch (e) {
-                    // Popup error
+                    return false;
+                }, { searchText: target, fillValue: value });
+                if (foundAndFilled) {
+                    log(`Filled by pattern matching`);
+                    return true;
                 }
             }
+            catch (e1) {
+                log(`Pattern matching fill failed`);
+            }
+            // Strategy 3: Scroll and direct fill
+            try {
+                log(`Scrolling to field...`);
+                await scrollToElement(target);
+                await state.page?.fill(target, value, { timeout: 3000 });
+                log(`Successfully filled via scroll`);
+                return true;
+            }
+            catch (e2) {
+                log(`Direct fill failed`);
+            }
+            // Strategy 4: Clear, type with scrolling
+            try {
+                log(`Clear and type with scroll...`);
+                await scrollToElement(target);
+                await state.page?.click(target, { timeout: 2000 });
+                await state.page?.keyboard.press('Control+A');
+                await state.page?.keyboard.press('Delete');
+                await state.page?.type(target, value, { delay: 50 });
+                log(`Filled using clear and type`);
+                return true;
+            }
+            catch (e3) {
+                log(`Clear and type failed`);
+            }
+            // Strategy 5: Shadow DOM fill
+            try {
+                log(`Searching in Shadow DOM to fill...`);
+                const shadowFilled = await state.page?.evaluate(({ searchText, fillValue }) => {
+                    const walk = (node) => {
+                        if (node.nodeType === 1) { // Element node
+                            const el = node;
+                            const placeholder = el.placeholder || '';
+                            const ariaLabel = el.getAttribute('aria-label') || '';
+                            if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
+                                (placeholder.toLowerCase().includes(searchText.toLowerCase()) || ariaLabel.toLowerCase().includes(searchText.toLowerCase()))) {
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
+                                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                    el.value = fillValue;
+                                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                                    return true;
+                                }
+                            }
+                            // Check shadow root
+                            if (el.shadowRoot && walk(el.shadowRoot))
+                                return true;
+                        }
+                        // Walk children
+                        for (let child of node.childNodes) {
+                            if (walk(child))
+                                return true;
+                        }
+                        return false;
+                    };
+                    return walk(document);
+                }, { searchText: target, fillValue: value });
+                if (shadowFilled) {
+                    log(`Filled field in Shadow DOM`);
+                    return true;
+                }
+            }
+            catch (e4) {
+                log(`Shadow DOM fill failed`);
+            }
+            if (attempt < maxRetries) {
+                await state.page?.waitForTimeout(1500);
+            }
         }
-        log(`✗ Input field not found anywhere: "${target}"`);
-        return false;
+        catch (error) {
+            if (attempt < maxRetries) {
+                await state.page?.waitForTimeout(1500);
+            }
+        }
     }
-    catch (error) {
-        log(`[FILL ERROR] ${error.message}`);
-        return false;
-    }
+    return false;
 }
 async function getAllPageElements() {
     if (!state.page || state.page.isClosed()) {
@@ -1166,6 +1537,31 @@ async function getAllPageElements() {
             const seen = new Set();
             let elementIndex = 0;
             try {
+                // Helper: Check if element is inside a modal/overlay
+                const getOverlayContext = (el) => {
+                    let parent = el.parentElement;
+                    let depth = 0;
+                    while (parent && depth < 10) {
+                        const className = parent.getAttribute('class') || '';
+                        const id = parent.getAttribute('id') || '';
+                        const role = parent.getAttribute('role') || '';
+                        // Check for common modal/overlay indicators
+                        if (className.includes('modal') || className.includes('overlay') || className.includes('dialog') ||
+                            className.includes('popup') || className.includes('window') ||
+                            id.includes('modal') || id.includes('overlay') || id.includes('dialog') ||
+                            role === 'dialog' || role === 'alertdialog') {
+                            return `[OVERLAY: ${id || className.split(' ')[0]}]`;
+                        }
+                        // Check for fixed/absolute positioning that suggests overlay
+                        const style = window.getComputedStyle(parent);
+                        if (style.position === 'fixed' && style.zIndex && parseInt(style.zIndex) > 1000) {
+                            return `[OVERLAY: fixed-zindex-${style.zIndex}]`;
+                        }
+                        parent = parent.parentElement;
+                        depth++;
+                    }
+                    return '';
+                };
                 // Helper: Find associated label text for an element - COMPREHENSIVE SEARCH
                 const getAssociatedLabel = (el) => {
                     const id = el.getAttribute('id');
@@ -1404,6 +1800,185 @@ async function getAllPageElements() {
                         // Skip elements that can't be accessed
                     }
                 });
+                // ===== DETECT OVERLAY WINDOWS / MODALS / DIALOGS =====
+                // These are windows that appear on top of main content
+                const detectOverlayElements = () => {
+                    // Look for elements with modal/dialog indicators
+                    const overlaySelectors = [
+                        '[role="dialog"]',
+                        '[role="alertdialog"]',
+                        '.modal',
+                        '.overlay',
+                        '.dialog',
+                        '.popup',
+                        '.window',
+                        '[class*="modal"]',
+                        '[class*="overlay"]',
+                        '[class*="dialog"]',
+                        '[class*="popup"]',
+                        '[class*="window"]',
+                        '[style*="position: fixed"][style*="z-index"]',
+                        '[style*="position: absolute"][style*="z-index"]'
+                    ];
+                    const overlayElements = new Set();
+                    for (const selector of overlaySelectors) {
+                        try {
+                            const elements = document.querySelectorAll(selector);
+                            for (const el of Array.from(elements)) {
+                                overlayElements.add(el);
+                            }
+                        }
+                        catch (e) {
+                            // Invalid selector, continue
+                        }
+                    }
+                    return Array.from(overlayElements);
+                };
+                const overlayContainers = detectOverlayElements();
+                for (const overlayContainer of overlayContainers) {
+                    try {
+                        // Get all interactive elements within this overlay
+                        const allOverlayElements = overlayContainer.querySelectorAll('*');
+                        for (const el of Array.from(allOverlayElements)) {
+                            try {
+                                const tagName = el.tagName?.toLowerCase() || '';
+                                // Skip script, style tags
+                                if (['script', 'style', 'meta', 'link', 'noscript', 'head', 'html', 'body'].includes(tagName)) {
+                                    continue;
+                                }
+                                const id = el.getAttribute('id') || '';
+                                const name = el.getAttribute('name') || '';
+                                const className = el.getAttribute('class') || '';
+                                const type = el.getAttribute('type') || '';
+                                const placeholder = el.getAttribute('placeholder') || '';
+                                const textContent = el.textContent?.trim().substring(0, 150) || '';
+                                const ariaLabel = el.getAttribute('aria-label') || '';
+                                const title = el.getAttribute('title') || '';
+                                const role = el.getAttribute('role') || '';
+                                // Get element visibility
+                                const style = window.getComputedStyle(el);
+                                const isVisible = style.display !== 'none' &&
+                                    style.visibility !== 'hidden' &&
+                                    style.opacity !== '0' &&
+                                    el.offsetWidth > 0 &&
+                                    el.offsetHeight > 0;
+                                // Skip hidden or very small elements
+                                if (!isVisible)
+                                    continue;
+                                // Determine element type
+                                let elementType = '';
+                                let isInteractive = false;
+                                let priority = 11; // Higher priority than main page
+                                if (tagName === 'input') {
+                                    elementType = type || 'input';
+                                    isInteractive = true;
+                                    priority = 11;
+                                }
+                                else if (tagName === 'button') {
+                                    elementType = 'button';
+                                    isInteractive = true;
+                                    priority = 11;
+                                }
+                                else if (tagName === 'a') {
+                                    elementType = 'link';
+                                    isInteractive = true;
+                                    priority = 11;
+                                }
+                                else if (tagName === 'select') {
+                                    elementType = 'select';
+                                    isInteractive = true;
+                                    priority = 11;
+                                }
+                                else if (tagName === 'textarea') {
+                                    elementType = 'textarea';
+                                    isInteractive = true;
+                                    priority = 11;
+                                }
+                                else if (role === 'button' || role === 'tab' || role === 'menuitem') {
+                                    elementType = role;
+                                    isInteractive = true;
+                                    priority = 11;
+                                }
+                                else if (el.onclick !== null || style.cursor === 'pointer') {
+                                    elementType = 'clickable';
+                                    isInteractive = true;
+                                    priority = 11;
+                                }
+                                else if (textContent && textContent.length > 3 && (tagName === 'span' || tagName === 'div' || tagName === 'p' || tagName === 'label')) {
+                                    elementType = 'text-' + tagName;
+                                    priority = 8;
+                                }
+                                else {
+                                    continue; // Skip other elements
+                                }
+                                // Get display name
+                                const displayName = getDisplayName(el, tagName, textContent, placeholder, ariaLabel);
+                                // Skip elements without a meaningful name
+                                if (!displayName && !id && !name && !title) {
+                                    continue;
+                                }
+                                // Create unique identifier
+                                const uniqueKey = `overlay:${tagName}:${displayName}:${id}:${name}`;
+                                // Avoid duplicates
+                                if (seen.has(uniqueKey)) {
+                                    continue;
+                                }
+                                seen.add(uniqueKey);
+                                // Get element position
+                                const rect = el.getBoundingClientRect();
+                                // Use display name as primary label
+                                const label = displayName || title || id || name || `${elementType}_${elementIndex}`;
+                                // Determine overlay type
+                                const overlayId = overlayContainer.getAttribute('id') || '';
+                                const overlayClass = overlayContainer.getAttribute('class') || '';
+                                const overlayRole = overlayContainer.getAttribute('role') || '';
+                                let overlayType = 'modal';
+                                if (overlayRole === 'alertdialog')
+                                    overlayType = 'alert';
+                                else if (overlayClass.includes('popup'))
+                                    overlayType = 'popup';
+                                else if (overlayClass.includes('window'))
+                                    overlayType = 'window';
+                                else if (overlayClass.includes('overlay'))
+                                    overlayType = 'overlay';
+                                items.push({
+                                    index: elementIndex,
+                                    type: elementType,
+                                    tag: tagName,
+                                    id,
+                                    name,
+                                    class: className,
+                                    placeholder,
+                                    text: textContent,
+                                    ariaLabel,
+                                    title,
+                                    role,
+                                    visible: isVisible,
+                                    interactive: isInteractive,
+                                    label: label,
+                                    displayName: displayName,
+                                    priority,
+                                    location: `overlay[${overlayType}]`,
+                                    overlayId: overlayId,
+                                    overlayType: overlayType,
+                                    position: {
+                                        top: Math.round(rect.top),
+                                        left: Math.round(rect.left),
+                                        width: Math.round(rect.width),
+                                        height: Math.round(rect.height)
+                                    }
+                                });
+                                elementIndex++;
+                            }
+                            catch (e) {
+                                // Skip this element
+                            }
+                        }
+                    }
+                    catch (e) {
+                        // Skip this overlay container
+                    }
+                }
                 // NOW SEARCH IN IFRAMES
                 const iframes = document.querySelectorAll('iframe');
                 for (const iframe of Array.from(iframes)) {
@@ -1508,17 +2083,135 @@ async function getAllPageElements() {
                         // Cross-origin iframe - skip
                     }
                 }
+                // ===== DETECT ELEMENTS IN SHADOW DOM =====
+                // Shadow DOM is used by Web Components and some libraries
+                const collectShadowDOMElements = (rootElement, depth = 0) => {
+                    if (depth > 5)
+                        return; // Limit recursion depth
+                    try {
+                        const allElements = rootElement.querySelectorAll('*');
+                        for (const el of Array.from(allElements)) {
+                            if (el.shadowRoot) {
+                                try {
+                                    const shadowElements = el.shadowRoot.querySelectorAll('*');
+                                    for (const shadowElRaw of Array.from(shadowElements)) {
+                                        const shadowEl = shadowElRaw;
+                                        try {
+                                            const tagName = shadowEl.tagName?.toLowerCase() || '';
+                                            if (['script', 'style', 'meta', 'link', 'noscript', 'head', 'html'].includes(tagName)) {
+                                                continue;
+                                            }
+                                            const id = shadowEl.getAttribute('id') || '';
+                                            const name = shadowEl.getAttribute('name') || '';
+                                            const className = shadowEl.getAttribute('class') || '';
+                                            const type = shadowEl.getAttribute('type') || '';
+                                            const placeholder = shadowEl.getAttribute('placeholder') || '';
+                                            const textContent = shadowEl.textContent?.trim().substring(0, 150) || '';
+                                            const ariaLabel = shadowEl.getAttribute('aria-label') || '';
+                                            const title = shadowEl.getAttribute('title') || '';
+                                            const role = shadowEl.getAttribute('role') || '';
+                                            const style = window.getComputedStyle(shadowEl);
+                                            const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' &&
+                                                shadowEl.offsetWidth > 0 && shadowEl.offsetHeight > 0;
+                                            if (!isVisible)
+                                                continue;
+                                            let elementType = '';
+                                            let isInteractive = false;
+                                            if (tagName === 'input') {
+                                                elementType = type || 'input';
+                                                isInteractive = true;
+                                            }
+                                            else if (tagName === 'button') {
+                                                elementType = 'button';
+                                                isInteractive = true;
+                                            }
+                                            else if (tagName === 'a') {
+                                                elementType = 'link';
+                                                isInteractive = true;
+                                            }
+                                            else if (tagName === 'select') {
+                                                elementType = 'select';
+                                                isInteractive = true;
+                                            }
+                                            else if (role === 'button' || role === 'tab') {
+                                                elementType = role;
+                                                isInteractive = true;
+                                            }
+                                            else if (shadowEl.onclick !== null || style.cursor === 'pointer') {
+                                                elementType = 'clickable';
+                                                isInteractive = true;
+                                            }
+                                            else if (textContent && textContent.length > 3) {
+                                                elementType = 'text-' + tagName;
+                                            }
+                                            else {
+                                                continue;
+                                            }
+                                            const displayName = getDisplayName(shadowEl, tagName, textContent, placeholder, ariaLabel);
+                                            if (!displayName && !id && !name && !title)
+                                                continue;
+                                            const uniqueKey = `shadow:${tagName}:${displayName}:${id}:${name}`;
+                                            if (seen.has(uniqueKey))
+                                                continue;
+                                            seen.add(uniqueKey);
+                                            const rect = shadowEl.getBoundingClientRect();
+                                            const label = displayName || title || id || name || `${elementType}_${elementIndex}`;
+                                            items.push({
+                                                index: elementIndex,
+                                                type: elementType,
+                                                tag: tagName,
+                                                id,
+                                                name,
+                                                class: className,
+                                                placeholder,
+                                                text: textContent,
+                                                ariaLabel,
+                                                title,
+                                                role,
+                                                visible: isVisible,
+                                                interactive: isInteractive,
+                                                label: label,
+                                                displayName: displayName,
+                                                priority: 10,
+                                                location: 'shadow-dom',
+                                                position: {
+                                                    top: Math.round(rect.top),
+                                                    left: Math.round(rect.left),
+                                                    width: Math.round(rect.width),
+                                                    height: Math.round(rect.height)
+                                                }
+                                            });
+                                            elementIndex++;
+                                        }
+                                        catch (e) {
+                                            // Skip shadow element
+                                        }
+                                    }
+                                    // Recursively check shadow DOM elements for nested shadow roots
+                                    collectShadowDOMElements(el, depth + 1);
+                                }
+                                catch (e) {
+                                    // Can't access shadow root
+                                }
+                            }
+                        }
+                    }
+                    catch (e) {
+                        // Skip shadow DOM collection
+                    }
+                };
+                collectShadowDOMElements(document.documentElement);
             }
             catch (error) {
                 return items;
             }
-            return items.slice(0, 300); // Increased limit to 300 for more results
+            return items.slice(0, 500); // Increased limit to 500 to include overlay and shadow elements
         });
         if (!elements || !Array.isArray(elements)) {
             log(`Elements array is invalid, returning empty array`);
             return [];
         }
-        log(`Found ${elements.length} page elements (including ${elements.filter((e) => e.location === 'iframe').length} in iframes)`);
+        log(`Found ${elements.length} page elements (iframe: ${elements.filter((e) => e.location === 'iframe').length}, overlay: ${elements.filter((e) => e.location?.includes('overlay')).length}, shadow-dom: ${elements.filter((e) => e.location === 'shadow-dom').length})`);
         return elements;
     }
     catch (e) {
@@ -1535,95 +2228,163 @@ async function waitForPageReady(timeout = 30000) {
     if (!state.page || state.page.isClosed())
         return false;
     const startTime = Date.now();
+    let lastActivityTime = Date.now();
     try {
-        // Strategy 1: Wait for main page navigation (5 seconds max)
+        // Strategy 1: Wait for main page navigation
         try {
-            await Promise.race([
-                state.page.waitForLoadState('networkidle', { timeout: 5000 }),
-                new Promise(resolve => setTimeout(resolve, 5000))
-            ]).catch(() => { });
+            await state.page.waitForLoadState('networkidle', { timeout: Math.min(timeout, 15000) }).catch(() => { });
         }
         catch (e) {
             // Continue with other checks
         }
-        // Check elapsed time
-        if (Date.now() - startTime > timeout)
-            return false;
-        // Strategy 2: Quick DOM readiness check (3 seconds max)
+        // Strategy 2: Wait for all frames to be ready
         try {
-            await Promise.race([
-                state.page.evaluate(() => {
-                    return new Promise((resolve) => {
-                        if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                            resolve();
-                        }
-                        else {
-                            const handler = () => {
-                                document.removeEventListener('DOMContentLoaded', handler);
-                                resolve();
-                            };
-                            document.addEventListener('DOMContentLoaded', handler);
-                            setTimeout(() => resolve(), 3000);
-                        }
-                    });
-                }),
-                new Promise(resolve => setTimeout(resolve, 3000))
-            ]).catch(() => { });
+            const frames = state.page.frames();
+            for (const frame of frames) {
+                try {
+                    await frame.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => { });
+                }
+                catch (e) {
+                    // Frame might be cross-origin, continue
+                }
+            }
         }
         catch (e) {
-            // DOM check skipped
+            // Frame checks completed
         }
-        // Check elapsed time
-        if (Date.now() - startTime > timeout)
-            return false;
-        // Strategy 3: Wait for loading indicators to disappear (2 seconds max)
+        // Strategy 3: Wait for common loading indicators to disappear
         try {
             const loadingIndicators = await state.page.evaluate(() => {
                 const indicators = document.querySelectorAll('[class*="loading"], [class*="spinner"], [id*="loading"], [id*="spinner"], ' +
                     '[data-testid*="loading"], [aria-busy="true"], .loader, .load, .progress');
                 return indicators.length;
-            }).catch(() => 0);
+            });
             if (loadingIndicators > 0) {
-                await Promise.race([
-                    state.page.evaluate(() => {
-                        return new Promise((resolve) => {
-                            const checkIndicators = () => {
-                                const indicators = document.querySelectorAll('[class*="loading"], [class*="spinner"], [id*="loading"], [id*="spinner"], ' +
-                                    '[data-testid*="loading"], [aria-busy="true"], .loader, .load, .progress');
-                                return indicators.length === 0;
-                            };
+                await state.page.evaluate(() => {
+                    return new Promise((resolve) => {
+                        const checkIndicators = () => {
+                            const indicators = document.querySelectorAll('[class*="loading"], [class*="spinner"], [id*="loading"], [id*="spinner"], ' +
+                                '[data-testid*="loading"], [aria-busy="true"], .loader, .load, .progress');
+                            return indicators.length === 0;
+                        };
+                        if (checkIndicators()) {
+                            resolve(true);
+                            return;
+                        }
+                        const observer = new MutationObserver(() => {
                             if (checkIndicators()) {
-                                resolve(true);
-                                return;
-                            }
-                            const observer = new MutationObserver(() => {
-                                if (checkIndicators()) {
-                                    observer.disconnect();
-                                    resolve(true);
-                                }
-                            });
-                            observer.observe(document.body, {
-                                childList: true,
-                                subtree: true,
-                                attributes: true
-                            });
-                            // Timeout after 2 seconds
-                            setTimeout(() => {
                                 observer.disconnect();
-                                resolve(false);
-                            }, 2000);
+                                resolve(true);
+                            }
                         });
-                    }),
-                    new Promise(resolve => setTimeout(resolve, 2000))
-                ]).catch(() => { });
+                        observer.observe(document.body, {
+                            childList: true,
+                            subtree: true,
+                            attributes: true
+                        });
+                        // Timeout after 8 seconds
+                        setTimeout(() => {
+                            observer.disconnect();
+                            resolve(false);
+                        }, 8000);
+                    });
+                });
             }
         }
         catch (e) {
             // Loading indicator check skipped
         }
+        // Strategy 4: Wait for DOM to be interactive
+        try {
+            await state.page.evaluate(() => {
+                return new Promise((resolve) => {
+                    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                        resolve();
+                    }
+                    else {
+                        document.addEventListener('DOMContentLoaded', () => resolve());
+                        setTimeout(() => resolve(), 3000);
+                    }
+                });
+            });
+        }
+        catch (e) {
+            // DOM check skipped
+        }
+        // Strategy 5: Wait for network to settle (no requests for 2 seconds)
+        try {
+            let pendingRequests = true;
+            let settledCount = 0;
+            while (pendingRequests && Date.now() - startTime < timeout) {
+                try {
+                    const requestCount = await state.page.evaluate(() => {
+                        return performance.getEntriesByType?.('resource')?.length || 0;
+                    });
+                    if (requestCount === 0 || settledCount > 3) {
+                        pendingRequests = false;
+                    }
+                    else {
+                        settledCount++;
+                        await state.page.waitForTimeout(500);
+                    }
+                }
+                catch (e) {
+                    pendingRequests = false;
+                }
+            }
+        }
+        catch (e) {
+            // Network settle check skipped
+        }
+        // Strategy 6: Wait for all AJAX/Fetch requests to complete
+        try {
+            await state.page.evaluate(() => {
+                return new Promise((resolve) => {
+                    let requestCount = 0;
+                    const originalFetch = window.fetch;
+                    const originalXHR = window.XMLHttpRequest;
+                    // Track fetch requests
+                    window.fetch = function (...args) {
+                        requestCount++;
+                        return originalFetch.apply(this, args).finally(() => {
+                            requestCount--;
+                            if (requestCount === 0) {
+                                setTimeout(() => resolve(), 500);
+                            }
+                        });
+                    };
+                    // Check if requests are already in flight
+                    setTimeout(() => {
+                        if (requestCount === 0) {
+                            resolve();
+                        }
+                    }, 500);
+                    // Timeout after 8 seconds
+                    setTimeout(() => resolve(), 8000);
+                });
+            }).catch(() => { });
+        }
+        catch (e) {
+            // AJAX check skipped
+        }
+        // Strategy 7: Final stability check
+        try {
+            const isStable = await state.page.evaluate(() => {
+                // Check if page has interactive elements visible
+                const interactiveElements = document.querySelectorAll('button, input, a, select, textarea, [role="button"]');
+                return interactiveElements.length > 0 && document.readyState !== 'loading';
+            });
+        }
+        catch (e) {
+            // Stability check skipped
+        }
+        const totalWaitTime = Date.now() - startTime;
+        if (totalWaitTime > 5000) {
+            log(`[Page Ready] Wait time: ${totalWaitTime}ms`);
+        }
         return true;
     }
-    catch (e) {
+    catch (error) {
         return false;
     }
 }
@@ -1632,11 +2393,8 @@ async function waitForPageReady(timeout = 30000) {
  */
 async function executeWithPageReady(actionFn, stepName) {
     try {
-        // Wait for page readiness with shorter timeout (10 seconds) - don't block indefinitely
-        // Even if page isn't "ready", we should still try the action
-        await waitForPageReady(10000).catch(() => {
-            log(`[${stepName}] Page readiness check timed out, proceeding anyway...`);
-        });
+        // Always wait for page readiness
+        const isReady = await waitForPageReady(30000);
         // Add small delay to ensure rendering
         await state.page?.waitForTimeout(300);
         // Execute the action
