@@ -70,29 +70,26 @@ function log(message: string) {
 async function setupPageListeners(page: Page) {
     // Listen for popup windows
     page.on('popup', async (popup: Page) => {
-        log(`Popup detected! New window/tab opened`);
+        log(`🪟 Popup detected! New window/tab opened`);
         allPages.push(popup);
         
         // Wait for popup to load
         await popup.waitForLoadState('networkidle').catch(() => {});
         
-        // Switch to the new popup
-        state.page = popup;
-        log(`Switched to new popup/tab`);
+        // Keep popup but don't auto-switch (let search find it)
+        log(`🪟 Added popup to searchable windows (${allPages.length} windows total)`);
     });
 
     // Listen for new pages in context
     state.context?.on('page', async (newPage: Page) => {
         if (!allPages.includes(newPage)) {
-            log(`New page detected in context`);
+            log(`🪟 New page detected in context`);
             allPages.push(newPage);
             
             // Wait for page to load
             await newPage.waitForLoadState('networkidle').catch(() => {});
             
-            // Switch to the new page
-            state.page = newPage;
-            log(`Switched to new page`);
+            log(`🪟 Added new page to searchable windows (${allPages.length} windows total)`);
         }
     });
 }
@@ -629,6 +626,67 @@ async function searchInAllFrames(target: string, action: 'click' | 'fill', fillV
 
         return false;
     } catch (error: any) {
+        return false;
+    }
+}
+
+/**
+ * Search in all open subwindows (popups, new tabs)
+ * Returns true if element was found and action executed
+ */
+async function searchInAllSubwindows(target: string, action: 'click' | 'fill', fillValue?: string): Promise<boolean> {
+    if (allPages.length <= 1) return false; // Only main page open
+
+    try {
+        log(`🪟 Searching in ${allPages.length} subwindows for: "${target}"`);
+        
+        // Search all subwindows except the main one
+        for (let i = 1; i < allPages.length; i++) {
+            const subwindow = allPages[i];
+            
+            if (subwindow.isClosed()) continue;
+            
+            try {
+                await subwindow.waitForLoadState('domcontentloaded').catch(() => {});
+                
+                log(`🪟 Searching subwindow ${i}/${allPages.length - 1}...`);
+                
+                // Get frames from this subwindow
+                const frames = subwindow.frames();
+                
+                for (const frame of frames) {
+                    try {
+                        await frame.waitForLoadState('domcontentloaded').catch(() => {});
+                        await frame.waitForTimeout(100);
+                        
+                        if (action === 'click') {
+                            const result = await executeClickInFrame(frame, target, `[Subwindow ${i}]`);
+                            if (result) {
+                                state.page = subwindow; // Switch to this subwindow
+                                log(`✅ Found in subwindow ${i}!`);
+                                return true;
+                            }
+                        } else if (action === 'fill' && fillValue) {
+                            const result = await executeFillInFrame(frame, target, fillValue, `[Subwindow ${i}]`);
+                            if (result) {
+                                state.page = subwindow; // Switch to this subwindow
+                                log(`✅ Found in subwindow ${i}!`);
+                                return true;
+                            }
+                        }
+                    } catch (frameError) {
+                        continue;
+                    }
+                }
+            } catch (windowError) {
+                continue;
+            }
+        }
+        
+        log(`🪟 Element not found in any subwindow`);
+        return false;
+    } catch (error: any) {
+        log(`🪟 Subwindow search error: ${error.message}`);
         return false;
     }
 }
@@ -1379,6 +1437,16 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
             }
         }
     }
+
+    // FINAL FALLBACK: Search in all open subwindows (popups, new tabs)
+    if (allPages.length > 1) {
+        log(`🪟 Trying subwindow search as final fallback...`);
+        const subwindowResult = await searchInAllSubwindows(target, 'click');
+        if (subwindowResult) {
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -1620,6 +1688,21 @@ async function fillWithRetry(target: string, value: string, maxRetries: number =
             }
         }
     }
+
+    // Final fallback: Check if there are open subwindows
+    if (allPages.length > 1) {
+        try {
+            log(`Field not found in main window, searching subwindows...`);
+            const foundInSubwindow = await searchInAllSubwindows(target, 'fill', value);
+            if (foundInSubwindow) {
+                log(`Successfully filled in subwindow`);
+                return true;
+            }
+        } catch (swError) {
+            log(`Subwindow fill search failed`);
+        }
+    }
+
     return false;
 }
 
