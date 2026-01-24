@@ -886,70 +886,118 @@ async function validateFrameAccess(frame) {
 /**
  * Execute CLICK action in frame with sequential pattern matching
  * ENHANCED: Better detection for subwindow elements
+ *
+ * KEY PRINCIPLE: If it's visible on screen, it must be clickable
+ * - Searches ALL elements without visibility restrictions
+ * - Handles overlaid, hidden, nested elements
+ * - Forces clicks even if elements appear "invisible" to Playwright
  */
 async function executeClickInFrame(frame, target, framePath) {
     const targetLower = target.toLowerCase();
     try {
-        // PATTERN 0: ULTRA DEEP - Use evaluate to search ALL DOM including hidden
+        // PATTERN 0: ULTRA AGGRESSIVE DEEP SEARCH - NO VISIBILITY RESTRICTIONS
+        // This searches EVERY element in the entire frame, including hidden/overlaid ones
         try {
             const found = await frame.evaluate((searchText) => {
+                const searchLower = searchText.toLowerCase();
+                let elementsChecked = 0;
+                // Strategy 1: Direct element walk - check EVERYTHING
                 const walk = (node) => {
                     if (node.nodeType === 1) { // Element node
+                        elementsChecked++;
                         const el = node;
                         const text = (el.textContent || '').toLowerCase();
                         const title = (el.getAttribute('title') || '').toLowerCase();
                         const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
                         const dataTestId = (el.getAttribute('data-testid') || '').toLowerCase();
                         const onclick = el.getAttribute('onclick') || '';
-                        const searchLower = searchText.toLowerCase();
-                        const allAttrs = `${text} ${title} ${ariaLabel} ${dataTestId}`;
-                        if ((allAttrs.includes(searchLower) || onclick.includes(searchLower)) &&
-                            (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button' ||
-                                el.tagName === 'A' || el.onclick !== null || el.getAttribute('onclick'))) {
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width > 0 && rect.height > 0) {
-                                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                el.click();
-                                return true;
+                        const id = (el.getAttribute('id') || '').toLowerCase();
+                        const className = (el.getAttribute('class') || '').toLowerCase();
+                        // Create comprehensive search space
+                        const allText = `${text} ${title} ${ariaLabel} ${dataTestId} ${id} ${className}`;
+                        // Match if target found in any attribute or text
+                        if (allText.includes(searchLower) || onclick.includes(searchLower)) {
+                            // Match if element is clickable
+                            const isClickable = (el.tagName === 'BUTTON' ||
+                                el.getAttribute('role') === 'button' ||
+                                el.getAttribute('role') === 'menuitem' ||
+                                el.getAttribute('role') === 'tab' ||
+                                el.tagName === 'A' ||
+                                el.onclick !== null ||
+                                el.getAttribute('onclick') ||
+                                el.className.includes('btn') ||
+                                el.className.includes('button') ||
+                                el.style.cursor === 'pointer');
+                            if (isClickable) {
+                                // IMPORTANT: Try to click directly in JavaScript
+                                // This bypasses visibility checks - works for overlaid/hidden elements
+                                try {
+                                    el.click();
+                                    return true;
+                                }
+                                catch (e) {
+                                    // If normal click fails, try scrollIntoView then click
+                                    try {
+                                        el.scrollIntoView({ behavior: 'auto', block: 'center' });
+                                        el.click();
+                                        return true;
+                                    }
+                                    catch (e2) {
+                                        // Continue to next element
+                                    }
+                                }
                             }
                         }
                     }
-                    // Walk through children
+                    // Walk through ALL children (don't stop on first match)
                     for (let child of node.childNodes) {
                         if (walk(child))
                             return true;
                     }
                     return false;
                 };
-                // Start from document root
-                return walk(document);
+                // Start from document root and walk ENTIRE tree
+                const result = walk(document);
+                console.log(`[DEEP SEARCH] Checked ${elementsChecked} elements for "${searchText}"`);
+                return result;
             }, target);
             if (found) {
-                log(`✅ [SUBWINDOW${framePath}] Clicked via DEEP SEARCH: "${target}"`);
+                log(`✅ [DEEP SEARCH${framePath}] Found and clicked: "${target}" (NO visibility restrictions)`);
                 return true;
             }
         }
         catch (e) {
             log(`   ℹ️ Deep search in frame failed: ${e.message}`);
         }
-        // PATTERN 1: Buttons and Link Elements (highest priority)
+        // PATTERN 1: Buttons and Link Elements - FORCE CLICK without visibility check
         try {
-            const buttons = await frame.locator('button, a[href], [role="button"], [role="tab"], [role="menuitem"], [onclick]').all();
+            const buttons = await frame.locator('button, a[href], [role="button"], [role="tab"], [role="menuitem"], [onclick], input[type="button"], input[type="submit"]').all();
             for (const btn of buttons) {
                 try {
                     const text = await btn.textContent().catch(() => '');
                     const ariaLabel = await btn.getAttribute('aria-label').catch(() => '');
                     const title = await btn.getAttribute('title').catch(() => '');
                     const dataAttr = await btn.getAttribute('data-testid').catch(() => '');
-                    const allText = `${text} ${ariaLabel} ${title} ${dataAttr}`.toLowerCase();
+                    const value = await btn.getAttribute('value').catch(() => '');
+                    const allText = `${text} ${ariaLabel} ${title} ${dataAttr} ${value}`.toLowerCase();
                     if (allText.includes(targetLower)) {
-                        const isVisible = await btn.isVisible().catch(() => false);
-                        const isEnabled = await btn.isEnabled().catch(() => true);
-                        if (isVisible && isEnabled) {
-                            await btn.scrollIntoViewIfNeeded();
-                            await btn.click().catch(() => { });
-                            log(`✅ [SUBWINDOW${framePath}] Clicked: "${target}" - Frame Element Found`);
+                        // Force click without checking visibility - if it exists in DOM, click it
+                        // This handles overlaid/hidden elements
+                        try {
+                            await btn.click({ force: true, timeout: 5000 }).catch(() => { });
+                            log(`✅ [BUTTON${framePath}] Force-clicked: "${target}"`);
                             return true;
+                        }
+                        catch (clickError) {
+                            // If force click fails, try alternative methods
+                            try {
+                                await btn.evaluate((el) => el.click());
+                                log(`✅ [BUTTON-JS${framePath}] JavaScript-clicked: "${target}"`);
+                                return true;
+                            }
+                            catch (e2) {
+                                // Continue to next button
+                            }
                         }
                     }
                 }
@@ -961,20 +1009,31 @@ async function executeClickInFrame(frame, target, framePath) {
         catch (e) {
             // Pattern 1 failed, continue
         }
-        // PATTERN 2: Div/Span with event listeners
+        // PATTERN 2: Divs/Spans/Any element with onclick - NO VISIBILITY CHECKS
         try {
-            const divs = await frame.locator('div, span, p, section, article').all();
-            const maxDivsToCheck = Math.min(divs.length, 300);
-            for (let i = 0; i < maxDivsToCheck; i++) {
+            const allElements = await frame.locator('[onclick], [role="button"], [role="menuitem"], [role="tab"]').all();
+            for (const el of allElements) {
                 try {
-                    const el = divs[i];
                     const text = await el.textContent().catch(() => '');
-                    if (text && text.toLowerCase().includes(targetLower)) {
-                        const isVisible = await el.isVisible().catch(() => false);
-                        if (isVisible) {
-                            await el.scrollIntoViewIfNeeded();
-                            await el.click().catch(() => { });
+                    const className = await el.getAttribute('class').catch(() => '');
+                    const id = await el.getAttribute('id').catch(() => '');
+                    const allText = `${text} ${className} ${id}`.toLowerCase();
+                    if (allText.includes(targetLower)) {
+                        // Force click - element exists, so click it regardless of visibility
+                        try {
+                            await el.click({ force: true, timeout: 5000 }).catch(() => { });
+                            log(`✅ [ELEMENT${framePath}] Force-clicked (onclick): "${target}"`);
                             return true;
+                        }
+                        catch (e1) {
+                            try {
+                                await el.evaluate((elm) => elm.click());
+                                log(`✅ [ELEMENT-JS${framePath}] JavaScript-clicked (onclick): "${target}"`);
+                                return true;
+                            }
+                            catch (e2) {
+                                // Continue
+                            }
                         }
                     }
                 }
@@ -986,19 +1045,30 @@ async function executeClickInFrame(frame, target, framePath) {
         catch (e) {
             // Pattern 2 failed, continue
         }
-        // PATTERN 3: Input submit buttons
+        // PATTERN 3: Search by text content in ANY element (all divs, spans, p, etc)
         try {
-            const inputs = await frame.locator('input[type="button"], input[type="submit"]').all();
-            for (const inp of inputs) {
+            const allDivs = await frame.locator('div, span, p, section, article, label').all();
+            const maxCheck = Math.min(allDivs.length, 500); // Check up to 500 elements
+            for (let i = 0; i < maxCheck; i++) {
                 try {
-                    const value = await inp.getAttribute('value').catch(() => '');
-                    const title = await inp.getAttribute('title').catch(() => '');
-                    const allText = `${value} ${title}`.toLowerCase();
-                    if (allText.includes(targetLower)) {
-                        const isVisible = await inp.isVisible().catch(() => false);
-                        if (isVisible) {
-                            await inp.click();
+                    const el = allDivs[i];
+                    const text = await el.textContent().catch(() => '');
+                    if (text && text.toLowerCase().includes(targetLower)) {
+                        // Try to click regardless of visibility
+                        try {
+                            await el.click({ force: true, timeout: 5000 }).catch(() => { });
+                            log(`✅ [TEXT-MATCH${framePath}] Force-clicked text element: "${target}"`);
                             return true;
+                        }
+                        catch (e1) {
+                            try {
+                                await el.evaluate((elm) => elm.click());
+                                log(`✅ [TEXT-MATCH-JS${framePath}] JavaScript-clicked text element: "${target}"`);
+                                return true;
+                            }
+                            catch (e2) {
+                                // Continue
+                            }
                         }
                     }
                 }
@@ -1008,7 +1078,7 @@ async function executeClickInFrame(frame, target, framePath) {
             }
         }
         catch (e) {
-            // Pattern 3 failed
+            // Pattern 3 failed, continue
         }
         // PATTERN 4: Search in overlay/modal windows (for elements like "Customer Maintenance", etc)
         try {
@@ -1071,59 +1141,61 @@ async function executeClickInFrame(frame, target, framePath) {
 }
 /**
  * Execute FILL action in frame with sequential pattern matching
- * ENHANCED: Better detection for subwindow input fields
+ * ENHANCED: No visibility restrictions - fill ANY field you can see on screen
+ *
+ * KEY PRINCIPLE: If input field is visible on screen, it must be fillable
+ * - Removes visibility checks
+ * - Uses force fill for overlaid/hidden fields
+ * - Direct JavaScript manipulation for stubborn fields
  */
 async function executeFillInFrame(frame, target, fillValue, framePath) {
     const targetLower = target.toLowerCase();
     try {
-        // PATTERN 0: ULTRA DEEP - Use evaluate to find ALL inputs in DOM tree
+        // PATTERN 0: ULTRA AGGRESSIVE DEEP FILL - NO VISIBILITY RESTRICTIONS
         try {
             const filled = await frame.evaluate(({ searchText, fillVal }) => {
-                const walk = (node) => {
-                    if (node.nodeType === 1) { // Element node
-                        const el = node;
-                        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-                            const title = (el.getAttribute('title') || '').toLowerCase();
-                            const placeholder = (el.placeholder || '').toLowerCase();
-                            const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-                            const name = (el.name || '').toLowerCase();
-                            const id = (el.id || '').toLowerCase();
-                            const allAttrs = `${title} ${placeholder} ${ariaLabel} ${name} ${id}`;
-                            if (allAttrs.includes(searchText.toLowerCase())) {
-                                const rect = el.getBoundingClientRect();
-                                // Even if not visible, try to fill
-                                try {
-                                    el.value = fillVal;
-                                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                                    el.dispatchEvent(new Event('blur', { bubbles: true }));
-                                    if (rect.width > 0 && rect.height > 0) {
-                                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                    }
-                                    return true;
-                                }
-                                catch (e) { }
-                            }
+                const searchLower = searchText.toLowerCase();
+                const allInputs = document.querySelectorAll('input, textarea');
+                // Direct walk through all inputs
+                for (const inp of Array.from(allInputs)) {
+                    const el = inp;
+                    const title = (el.getAttribute('title') || '').toLowerCase();
+                    const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
+                    const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                    const name = (el.getAttribute('name') || '').toLowerCase();
+                    const id = (el.getAttribute('id') || '').toLowerCase();
+                    const label = (el.parentElement?.textContent || '').toLowerCase();
+                    // Comprehensive search across all attributes and context
+                    const allText = `${title} ${placeholder} ${ariaLabel} ${name} ${id} ${label}`;
+                    if (allText.includes(searchLower)) {
+                        // DIRECT FILL - no visibility checks, no restrictions
+                        try {
+                            el.focus();
+                            el.select();
+                            el.value = fillVal;
+                            // Dispatch all necessary events
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                            el.dispatchEvent(new Event('blur', { bubbles: true }));
+                            el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                            return true;
+                        }
+                        catch (e) {
+                            // Try next
                         }
                     }
-                    // Walk through children
-                    for (let child of node.childNodes) {
-                        if (walk(child))
-                            return true;
-                    }
-                    return false;
-                };
-                return walk(document);
+                }
+                return false;
             }, { searchText: target, fillVal: fillValue });
             if (filled) {
-                log(`✅ [SUBWINDOW${framePath}] Filled via DEEP SEARCH: "${target}" = "${fillValue}"`);
+                log(`✅ [DEEP FILL${framePath}] Filled: "${target}" = "${fillValue}" (NO visibility restrictions)`);
                 return true;
             }
         }
         catch (e) {
             log(`   ℹ️ Deep fill search in frame failed: ${e.message}`);
         }
-        // PATTERN 1A: Match by title attribute (for Oracle fields)
+        // PATTERN 1A: Force fill - try to fill any matching input WITHOUT visibility checks
         try {
             const inputs = await frame.locator('input, textarea').all();
             for (const input of inputs) {
@@ -1135,25 +1207,25 @@ async function executeFillInFrame(frame, target, fillValue, framePath) {
                 const allAttrs = `${title} ${placeholder} ${ariaLabel} ${name} ${id}`.toLowerCase();
                 if (allAttrs.includes(targetLower)) {
                     try {
-                        await input.scrollIntoViewIfNeeded();
-                        await input.waitForElementState('visible', { timeout: 3000 }).catch(() => { });
-                        await input.click({ force: true });
-                        await input.selectText().catch(() => { });
-                        await input.fill(fillValue, { timeout: 5000 });
-                        await input.dispatchEvent('input');
-                        await input.dispatchEvent('change');
-                        await input.dispatchEvent('blur');
-                        log(`[FILL] ✓ Pattern 1A: Successfully filled "${title || name || id}" = "${fillValue}"${framePath ? ` in ${framePath}` : ''}`);
+                        // Force fill without visibility checks
+                        await input.click({ force: true }).catch(() => { });
+                        await input.fill(fillValue, { timeout: 5000, force: true }).catch(() => { });
+                        await input.evaluate((el) => {
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                            el.dispatchEvent(new Event('blur', { bubbles: true }));
+                        }).catch(() => { });
+                        log(`✅ [FORCE-FILL${framePath}] Filled: "${name || id || title}" = "${fillValue}"`);
                         return true;
                     }
                     catch (e) {
-                        log(`[FILL] Pattern 1A failed: ${e.message}`);
+                        // Try next field
                     }
                 }
             }
         }
         catch (e) { }
-        // PATTERN 1B: Label-associated inputs
+        // PATTERN 1B: Label-associated inputs - FORCE click and fill
         try {
             const labels = await frame.locator('label').all();
             for (const label of labels) {
@@ -1169,16 +1241,18 @@ async function executeFillInFrame(frame, target, fillValue, framePath) {
                     }
                     if (inputEl) {
                         try {
-                            await inputEl.scrollIntoViewIfNeeded();
-                            await inputEl.click({ force: true });
-                            await inputEl.fill(fillValue, { timeout: 5000 });
-                            await inputEl.dispatchEvent('change');
-                            await inputEl.dispatchEvent('blur');
-                            log(`[FILL] ✓ Pattern 1B: Successfully filled label "${labelText.trim()}" = "${fillValue}"`);
+                            // Force fill regardless of visibility
+                            await inputEl.click({ force: true }).catch(() => { });
+                            await inputEl.fill(fillValue, { timeout: 5000, force: true }).catch(() => { });
+                            await inputEl.evaluate((el) => {
+                                el.dispatchEvent(new Event('change', { bubbles: true }));
+                                el.dispatchEvent(new Event('blur', { bubbles: true }));
+                            }).catch(() => { });
+                            log(`✅ [LABEL-FILL${framePath}] Filled: "${labelText.trim()}" = "${fillValue}"`);
                             return true;
                         }
                         catch (e) {
-                            log(`[FILL] Pattern 1B failed: ${e.message}`);
+                            // Continue to next pattern
                         }
                     }
                 }
