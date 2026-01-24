@@ -783,7 +783,7 @@
         var countryCode = 'LS';
          
           
-         var currentTime = '10\x3A24\x3A57';
+         var currentTime = '10\x3A44\x3A40';
           
             var VIEWMAINT           =   '';
             var addonGlobal         =   new Array();
@@ -804,7 +804,7 @@
             var LangCode 	    = 	'ENG';
             var Lcy		    =	'LSL';
             var HostCode		    =	'HOST1';//12.3 Core Host Code Change
-            var SignonSerial 	    = 	'60407215';	
+            var SignonSerial 	    = 	'60408062';	
             var UIXmlPath 	    = 	'UIXML';
             var XslPath 	    = 	'Templates/XSL';
             var UserId		    =	'SAI_MAK';
@@ -841,7 +841,7 @@
             //12.2 Branch Coop entity added fbContext as getCacheFBTBParams argument
 			var denomBasedTracking  =   '8206,8207,8004,8203';  //9NT1620_FCUBS_12.0.3_INTERNAL_18325754       
 			  var amountBasedSV  =   'N';  //12.1_SV_Changes
-            var CSRFtoken           =   '0A0138070E7E6D4DFAF90B24A68A57DDC1CC73E7C56425B90AAB1B23154B46ED';/*10.5.2 CSRFTOKEN changes*/
+            var CSRFtoken           =   'C91530CB2311871CCB1E682FB70126B3DE68AAAF975ED36217620C77F1B1A0CB';/*10.5.2 CSRFTOKEN changes*/
             var FCJ_Stream          =   '';
             var curr_user           =   'SAI_MAK';    
             var expirymsgdate       =   '';
@@ -925,7 +925,7 @@
             var Horzbar             =   'Y';
             var Vertbar             =   'Y';
             
-            var loginDateLast                  = '2026\x2D01\x2D24\x2010\x3A22\x3A32';
+            var loginDateLast                  = '2026\x2D01\x2D31\x2010\x3A37\x3A48';
             var noOfInvalidLogins              = '0'; 
             
             
@@ -1137,7 +1137,7 @@
                         </li>
                     </ul>
 					<ul id="menu" class="listPop" style="width:auto;">  <!--Fix for 28682961-->
-                        <li id="sesTime" tabindex="0" onmouseover="showMenu(this, true, event)" onmouseout="hideMenu(this, true, false, event)" onkeydown="return handleKeys(this, true, event);hideMenu(this, true, true, event);" title="Session Time :">00:12:40</li>
+                        <li id="sesTime" tabindex="0" onmouseover="showMenu(this, true, event)" onmouseout="hideMenu(this, true, false, event)" onkeydown="return handleKeys(this, true, event);hideMenu(this, true, true, event);" title="Session Time :">00:00:08</li>
                         <!--timeZone changes by Shishir Start-->
                         <li id="datel1" tabindex="0" onmouseover="showMenu(this, true, event)" onmouseout="hideMenu(this, true, false, event)" onkeydown="return handleKeys(this, true, event);hideMenu(this, true, true, event);" %="">Africa/Maseru</li>
                         <!--timeZone changes by Shishir End-->
@@ -1405,9 +1405,9 @@
                 <iframe id="ifr_ReminderAlertWin" class="frames" src="" allowtransparency="yes" frameborder="0" scrolling="no"></iframe>
             </div> 
             
-        <div id="screenSavermasker" class="masker" style="display: block; height: 0px; width: 0px;" tabindex="-1">
+        <div id="screenSavermasker" class="masker" style="display:none" tabindex="-1">
          
-            <div id="screenSaverPwdDIV" class="WNDcontainerModal" style="display: none; margin-top: 206.333px; margin-left: 367.2px; z-index: 1;" onkeydown="return fnHandleScreenBtn(event)">
+            <div id="screenSaverPwdDIV" class="WNDcontainerModal" style="display:none;" onkeydown="return fnHandleScreenBtn(event)">
                 <div onmousedown="startDrag(event)" id="wndtitle" class="WNDtitlebar"><!--static header change -->
                     <b class="BTNicon"><span class="ICOalert2"></span></b>	
                     <h1 class="WNDtitletxt">Information Message</h1>            	
@@ -1424,7 +1424,20 @@
                              </tbody>
                         </table>
                     </div>
-                        <div class="DIVtblbox2" id="screensavertblcontainer"><table width="100%" cellspacing="0" cellpadding="0" border="0" summary="Alert" class="TBLtwo" id="SCREEN_SAVER_TBL"><tbody id="cloneMsg"><tr id="alertMsg"><td style="display:block" scope="row" id="alertMsgI"><em title="Information Message" class="BTNicon"><span tabindex="0" class="ICOAlert_I"></span></em><span class="SPNtbltwoC">Enter password to unlock the application</span></td></tr><tr id="wrongAlertMsg"></tr></tbody></table></div>
+                        <div class="DIVtblbox2" id="screensavertblcontainer">
+                            <table width="100%" cellspacing="0" cellpadding="0" border="0" summary="Alert" class="TBLtwo" id="SCREEN_SAVER_TBL">
+                               <tbody id="cloneMsg">                                           
+                                <tr id="alertMsg">
+                                    <td style="display:block" scope="row" id="alertMsgI"><em title="Information Message" class="BTNicon"><span tabindex="0" class="ICOAlert_I"></span></em><span class="SPNtbltwoC">Enter password to unlock the application</span>
+                                    </td>
+                                </tr>
+                                <tr id="wrongAlertMsg" style="display:none">
+                                </tr>
+                                </tbody>
+                            </table>
+                            <div class="WNDcontent" style="clear:both;width:100%;height:40%;">
+                            </div><!-- 1203 OHGHAG fix removed ID -->
+                        </div>
                     </div>
                     <div class="WNDfootermodal">
                         <div class="WNDfbuttons">
