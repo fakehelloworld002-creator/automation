@@ -606,6 +606,14 @@ async function deepDOMSearch(target, action, fillValue) {
 async function searchInAllFrames(target, action, fillValue) {
     if (!state.page || state.page.isClosed())
         return false;
+    // Check pause before searching
+    if (state.isPaused) {
+        while (state.isPaused && !state.isStopped) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        if (state.isStopped)
+            return false;
+    }
     try {
         // Step 1: Get and validate all frames (max 15)
         const allFrames = state.page.frames();
@@ -617,6 +625,14 @@ async function searchInAllFrames(target, action, fillValue) {
         const frameSequence = buildFrameSearchSequence(framesToSearch);
         // Step 3: Sequential search through frame hierarchy
         for (let seqIndex = 0; seqIndex < frameSequence.length; seqIndex++) {
+            // Check pause between frames
+            if (state.isPaused) {
+                while (state.isPaused && !state.isStopped) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                if (state.isStopped)
+                    return false;
+            }
             const frameInfo = frameSequence[seqIndex];
             const frame = frameInfo.frame;
             const framePath = frameInfo.path;
@@ -1504,6 +1520,14 @@ async function waitForDynamicElement(target, timeout = 2000) {
 async function searchInPageOverlays(target, action, fillValue) {
     if (!state.page || state.page.isClosed())
         return false;
+    // Check pause before searching overlays
+    if (state.isPaused) {
+        while (state.isPaused && !state.isStopped) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        if (state.isStopped)
+            return false;
+    }
     try {
         log(`\n🎨 [OVERLAY PRIORITY] Searching for overlays/modals/dialogs in main page...`);
         // AGGRESSIVE APPROACH: Find all visible overlays by scanning DOM directly
@@ -1847,6 +1871,14 @@ async function clickWithRetry(target, maxRetries = 5) {
         }
     }
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        // Check pause at start of each retry attempt
+        if (state.isPaused) {
+            while (state.isPaused && !state.isStopped) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            if (state.isStopped)
+                return false;
+        }
         try {
             // Check if page is still valid before attempting
             if (!state.page || state.page.isClosed()) {
@@ -2130,6 +2162,14 @@ async function fillWithRetry(target, value, maxRetries = 5) {
         }
     }
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        // Check pause at start of each retry attempt
+        if (state.isPaused) {
+            while (state.isPaused && !state.isStopped) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            if (state.isStopped)
+                return false;
+        }
         try {
             // Check if page is still valid before attempting
             if (!state.page || state.page.isClosed()) {
@@ -3072,6 +3112,12 @@ async function getAllPageElements() {
 async function waitForPageReady(timeout = 30000) {
     if (!state.page || state.page.isClosed())
         return false;
+    // Check pause before starting
+    while (state.isPaused && !state.isStopped) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    if (state.isStopped)
+        return false;
     const startTime = Date.now();
     let lastActivityTime = Date.now();
     try {
@@ -3161,6 +3207,12 @@ async function waitForPageReady(timeout = 30000) {
             let pendingRequests = true;
             let settledCount = 0;
             while (pendingRequests && Date.now() - startTime < timeout) {
+                // Check pause during waiting
+                while (state.isPaused && !state.isStopped) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                if (state.isStopped)
+                    return false;
                 try {
                     const requestCount = await state.page.evaluate(() => {
                         return performance.getEntriesByType?.('resource')?.length || 0;
@@ -3252,6 +3304,22 @@ async function executeWithPageReady(actionFn, stepName) {
 }
 /* ============== STEP EXECUTION WITH SELF-HEALING ============== */
 async function executeStep(stepData) {
+    // Check pause before executing step
+    while (state.isPaused && !state.isStopped) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    if (state.isStopped) {
+        return {
+            stepId: stepData['STEP'] || `STEP_${state.currentStepIndex + 1}`,
+            action: stepData['ACTION'] || '',
+            target: stepData['TARGET'] || '',
+            status: 'STOPPED',
+            remarks: 'Automation stopped',
+            actualOutput: '',
+            screenshot: '',
+            pageSource: ''
+        };
+    }
     const stepId = stepData['STEP'] || `STEP_${state.currentStepIndex + 1}`;
     const action = (stepData['ACTION'] || '').toString().trim().toUpperCase().replace(/_/g, '');
     const target = (stepData['TARGET'] || '').toString().trim();
@@ -3278,6 +3346,12 @@ async function executeStep(stepData) {
         if (action === 'OPEN' || action === 'OPENURL') {
             for (let i = 1; i <= 3; i++) {
                 try {
+                    // Check pause before navigation
+                    while (state.isPaused && !state.isStopped) {
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+                    if (state.isStopped)
+                        throw new Error('Automation stopped');
                     log(`[Navigation ${i}/3]`);
                     // Check page before navigation
                     if (state.page.isClosed()) {
