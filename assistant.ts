@@ -1957,16 +1957,7 @@ async function searchInPageOverlays(target: string, action: 'click' | 'fill', fi
 async function advancedElementSearch(target: string, action: 'click' | 'fill', fillValue?: string, maxRetries: number = 3): Promise<boolean> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            // PRIORITY 0: Search overlays/modals in main page FIRST (they appear on top of main content)
-            // This is crucial for Customer Maintenance forms and dialogs that overlay the main page
-            log(`\n[ATTEMPT ${attempt}/${maxRetries}] 🎨 PRIORITY 0: Searching OVERLAYS FIRST...`);
-            const overlayResult = await searchInPageOverlays(target, action, fillValue);
-            if (overlayResult) {
-                log(`✅ [FOUND IN OVERLAY] Element located and action performed`);
-                return true;
-            }
-
-            // Step 1: Wait for dynamic element (in case it's being created)
+            // PRIORITY 0: Wait for dynamic element (in case it's being created)
             const dynamicFound = await waitForDynamicElement(target, 2000);
             if (dynamicFound) {
                 // Try again now that it exists
@@ -1979,13 +1970,26 @@ async function advancedElementSearch(target: string, action: 'click' | 'fill', f
                 }
             }
 
-            // Step 2: Search across all frames (handles cross-origin and nested)
+            // PRIORITY 1: Search across all frames FIRST (main page content + frames)
+            // This handles most normal elements like "Go" button on main page
+            log(`\n[ATTEMPT ${attempt}/${maxRetries}] 🔍 PRIORITY 1: Searching MAIN PAGE & FRAMES...`);
             const frameResult = await searchInAllFrames(target, action, fillValue);
             if (frameResult) return true;
 
-            // Step 3: Try deep DOM search on main page as fallback
+            // PRIORITY 2: Try deep DOM search on main page
+            // This is for elements not found in frame search
             const deepResult = await deepDOMSearch(target, action, fillValue);
             if (deepResult) return true;
+
+            // PRIORITY 3: Search overlays/modals in main page LAST
+            // Only search overlays after main page has been thoroughly searched
+            // This is crucial for Customer Maintenance forms that overlay the main page
+            log(`\n[ATTEMPT ${attempt}/${maxRetries}] 🎨 PRIORITY 3: Searching OVERLAYS (if any exist)...`);
+            const overlayResult = await searchInPageOverlays(target, action, fillValue);
+            if (overlayResult) {
+                log(`✅ [FOUND IN OVERLAY] Element located and action performed`);
+                return true;
+            }
 
             if (attempt < maxRetries) {
                 await state.page?.waitForTimeout(300); // Reduced wait between retries
@@ -2002,34 +2006,33 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
     // FIRST: Ensure page is fully loaded before attempting to find elements
     await waitForPageReady();
 
-    // PRIORITY 0: Search OVERLAYS/MODALS in main page FIRST (they appear on top of everything)
-    // This is for elements like Customer Maintenance that overlay the main page
-    log(`\n🎨 [PRIORITY 0 - OVERLAY SEARCH] Searching for overlays/modals in main page...`);
-    const overlayResult = await searchInPageOverlays(target, 'click');
-    if (overlayResult) {
-        log(`✅ [OVERLAY CLICK SUCCESS] Clicked element in overlay: "${target}"`);
+    // PRIORITY 1: Search MAIN PAGE & FRAMES FIRST
+    // This handles most normal elements like "Go", "New" button on main page
+    log(`\n🔍 [PRIORITY 1 - MAIN PAGE SEARCH] Searching main page & frames for: "${target}"`);
+    const mainPageResult = await searchInAllFrames(target, 'click');
+    if (mainPageResult) {
         return true;
     }
 
-    // PRIORITY 1: If there's a priority subwindow open, search it FIRST before main window
-    if (allPages.length > 1 && latestSubwindow && !latestSubwindow.isClosed()) {
-        log(`\n🎯 [PRIORITY 1 - SUBWINDOW SEARCH] Latest subwindow is open - searching it for target: "${target}"`);
-        try {
-            const foundInPriorityWindow = await searchInAllSubwindows(target, 'click');
-            if (foundInPriorityWindow) {
-                log(`✅ [PRIORITY 1] Successfully clicked in priority subwindow!`);
-                return true;
-            }
-        } catch (e) {
-            log(`Priority subwindow search failed, continuing...`);
-        }
-    }
-
-    // PRIORITY 2: Try advanced search (handles cross-origin, nested iframes, and dynamic elements)
-    log(`\n🔍 [PRIORITY 2 - ADVANCED SEARCH] Searching frames and main page...`);
+    // PRIORITY 2: Try advanced search (which includes overlays as Priority 3)
+    log(`\n🎨 [PRIORITY 2 - ADVANCED SEARCH] Searching overlays and using fallback methods...`);
     const advancedResult = await advancedElementSearch(target, 'click', undefined, 2);
     if (advancedResult) {
         return true;
+    }
+
+    // PRIORITY 3: If there's a priority subwindow open, search it
+    if (allPages.length > 1 && latestSubwindow && !latestSubwindow.isClosed()) {
+        log(`\n🎯 [PRIORITY 3 - SUBWINDOW SEARCH] Latest subwindow is open - searching for target: "${target}"`);
+        try {
+            const foundInPriorityWindow = await searchInAllSubwindows(target, 'click');
+            if (foundInPriorityWindow) {
+                log(`✅ [PRIORITY 3] Successfully clicked in subwindow!`);
+                return true;
+            }
+        } catch (e) {
+            log(`Subwindow search failed, continuing...`);
+        }
     }
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -2294,34 +2297,33 @@ async function fillWithRetry(target: string, value: string, maxRetries: number =
     // FIRST: Ensure page is fully loaded before attempting to find elements
     await waitForPageReady();
 
-    // PRIORITY 0: Search OVERLAYS/MODALS in main page FIRST (they appear on top of everything)
-    // This is for form fields inside Customer Maintenance that overlay the main page
-    log(`\n🎨 [PRIORITY 0 - OVERLAY SEARCH] Searching for field in overlays/modals...`);
-    const overlayResult = await searchInPageOverlays(target, 'fill', value);
-    if (overlayResult) {
-        log(`✅ [OVERLAY FILL SUCCESS] Filled field in overlay: "${target}" = "${value}"`);
+    // PRIORITY 1: Search MAIN PAGE & FRAMES FIRST
+    // This handles most normal form fields on the main page
+    log(`\n🔍 [PRIORITY 1 - MAIN PAGE SEARCH] Searching main page & frames for: "${target}"`);
+    const mainPageResult = await searchInAllFrames(target, 'fill', value);
+    if (mainPageResult) {
         return true;
     }
 
-    // PRIORITY 1: If there's a priority subwindow open, search it FIRST before main window
-    if (allPages.length > 1 && latestSubwindow && !latestSubwindow.isClosed()) {
-        log(`\n🎯 [PRIORITY 1 - SUBWINDOW SEARCH] Latest subwindow is open - searching it for field: "${target}"`);
-        try {
-            const foundInPriorityWindow = await searchInAllSubwindows(target, 'fill', value);
-            if (foundInPriorityWindow) {
-                log(`✅ [PRIORITY 1] Successfully filled in priority subwindow!`);
-                return true;
-            }
-        } catch (e) {
-            log(`Priority subwindow search failed, continuing...`);
-        }
-    }
-
-    // PRIORITY 2: Try advanced search (handles cross-origin, nested iframes, and dynamic elements)
-    log(`\n🔍 [PRIORITY 2 - ADVANCED SEARCH] Searching frames and main page...`);
+    // PRIORITY 2: Try advanced search (which includes overlays as Priority 3)
+    log(`\n🎨 [PRIORITY 2 - ADVANCED SEARCH] Searching overlays and using fallback methods...`);
     const advancedResult = await advancedElementSearch(target, 'fill', value, 2);
     if (advancedResult) {
         return true;
+    }
+
+    // PRIORITY 3: If there's a priority subwindow open, search it
+    if (allPages.length > 1 && latestSubwindow && !latestSubwindow.isClosed()) {
+        log(`\n🎯 [PRIORITY 3 - SUBWINDOW SEARCH] Latest subwindow is open - searching for field: "${target}"`);
+        try {
+            const foundInPriorityWindow = await searchInAllSubwindows(target, 'fill', value);
+            if (foundInPriorityWindow) {
+                log(`✅ [PRIORITY 3] Successfully filled in subwindow!`);
+                return true;
+            }
+        } catch (e) {
+            log(`Subwindow search failed, continuing...`);
+        }
     }
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
