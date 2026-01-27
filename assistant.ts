@@ -1019,6 +1019,59 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
     const targetLower = target.toLowerCase();
     
     try {
+        // **PRIORITY CHECK**: If target matches known button IDs, try direct ID lookup first
+        const knownButtonIds = {
+            'start': 'startBtn',
+            'stop': 'stopBtn'
+        };
+        
+        if (knownButtonIds[targetLower as keyof typeof knownButtonIds]) {
+            const buttonId = knownButtonIds[targetLower as keyof typeof knownButtonIds];
+            try {
+                // Method 1: Try Playwright click first
+                const btn = await frame.locator(`#${buttonId}`).first();
+                await btn.click({ force: true, timeout: 5000 }).catch(() => {});
+                
+                // Method 2: If Method 1 didn't work, manually invoke the onclick handler via JavaScript
+                const clicked = await frame.evaluate((id) => {
+                    const el = document.getElementById(id) as HTMLButtonElement;
+                    if (el) {
+                        // Try direct click first
+                        try {
+                            el.click();
+                            return true;
+                        } catch (e1) {
+                            // Try dispatchEvent
+                            try {
+                                el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                                return true;
+                            } catch (e2) {
+                                // Try calling onclick directly if it exists
+                                if (el.onclick) {
+                                    try {
+                                        el.onclick(new MouseEvent('click') as any);
+                                        return true;
+                                    } catch (e3) {
+                                        return false;
+                                    }
+                                }
+                                return false;
+                            }
+                        }
+                    }
+                    return false;
+                }, buttonId);
+                
+                if (clicked) {
+                    log(`✅ [DIRECT-ID${framePath}] Successfully clicked button via ID: "${target}"`);
+                    await frame.waitForTimeout(500); // Wait for action to complete
+                    return true;
+                }
+            } catch (e) {
+                // Continue with regular search
+            }
+        }
+
         // PATTERN 0: ULTRA AGGRESSIVE DEEP SEARCH - NO VISIBILITY RESTRICTIONS
         // This searches EVERY element in the entire frame, including hidden/overlaid ones
         try {
@@ -1110,10 +1163,23 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                     const title = await btn.getAttribute('title').catch(() => '');
                     const dataAttr = await btn.getAttribute('data-testid').catch(() => '');
                     const value = await btn.getAttribute('value').catch(() => '');
+                    const id = await btn.getAttribute('id').catch(() => '');
                     
-                    const allText = `${text} ${ariaLabel} ${title} ${dataAttr} ${value}`.toLowerCase();
+                    const allText = `${text} ${ariaLabel} ${title} ${dataAttr} ${value} ${id}`.toLowerCase();
                     
-                    if (allText.includes(targetLower)) {
+                    // Trim whitespace from text for exact matching
+                    const textTrimmed = text.trim().toLowerCase();
+                    const targetTrimmed = target.trim().toLowerCase();
+                    
+                    // ENHANCED MATCHING: Multiple strategies to find the button
+                    // 1. Exact match after trimming
+                    // 2. Text contains target (substring match)
+                    // 3. Target is single word and matches in combined text
+                    const isExactMatch = textTrimmed === targetTrimmed;
+                    const isTextMatch = textTrimmed.includes(targetTrimmed);
+                    const isInAllText = allText.includes(targetLower);
+                    
+                    if (isExactMatch || isTextMatch || isInAllText) {
                         // Force click without checking visibility - if it exists in DOM, click it
                         // This handles overlaid/hidden elements
                         try {
@@ -1127,7 +1193,16 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                                 log(`✅ [BUTTON-JS${framePath}] JavaScript-clicked: "${target}"`);
                                 return true;
                             } catch (e2) {
-                                // Continue to next button
+                                // Try dispatchEvent as last resort
+                                try {
+                                    await btn.evaluate((el: any) => {
+                                        el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                                    });
+                                    log(`✅ [BUTTON-EVENT${framePath}] Mouse-event-clicked: "${target}"`);
+                                    return true;
+                                } catch (e3) {
+                                    // Continue to next button
+                                }
                             }
                         }
                     }
@@ -1207,6 +1282,101 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
             }
         } catch (e) {
             // Pattern 3 failed, continue
+        }
+
+        // PATTERN 3B: ULTIMATE FALLBACK - Direct JavaScript querySelector search
+        // This finds ANY button with matching text and clicks it directly in JavaScript
+        try {
+            const found = await frame.evaluate((searchText) => {
+                const searchLower = searchText.toLowerCase();
+                
+                // Try to find and click button with querySelector
+                const buttons = document.querySelectorAll('button');
+                for (const btn of Array.from(buttons)) {
+                    const btnText = (btn.textContent || '').toLowerCase().trim();
+                    const btnTitle = (btn.getAttribute('title') || '').toLowerCase();
+                    const btnId = (btn.getAttribute('id') || '').toLowerCase();
+                    
+                    // Match on exact or contains
+                    if (btnText === searchLower || btnText.includes(searchLower) || btnTitle.includes(searchLower) || btnId.includes(searchLower)) {
+                        try {
+                            // Method 1: Direct click
+                            btn.click();
+                            return true;
+                        } catch (e) {
+                            // Method 2: dispatchEvent with MouseEvent
+                            try {
+                                btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                                return true;
+                            } catch (e2) {
+                                // Method 3: Try calling onclick directly
+                                if ((btn as any).onclick) {
+                                    try {
+                                        (btn as any).onclick(new MouseEvent('click') as any);
+                                        return true;
+                                    } catch (e3) {
+                                        continue;
+                                    }
+                                }
+                                // Method 4: Try triggering via PointerEvent
+                                try {
+                                    btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                                    btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+                                    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                                    btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                                    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                                    return true;
+                                } catch (e4) {
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Also try input buttons and submit
+                const inputs = document.querySelectorAll('input[type="button"], input[type="submit"]');
+                for (const inp of Array.from(inputs)) {
+                    const inpValue = (inp.getAttribute('value') || '').toLowerCase();
+                    if (inpValue === searchLower || inpValue.includes(searchLower)) {
+                        try {
+                            (inp as HTMLElement).click();
+                            return true;
+                        } catch (e) {
+                            continue;
+                        }
+                    }
+                }
+                
+                // Also try divs/spans with specific attributes that act as buttons
+                const divButtons = document.querySelectorAll('[role="button"], [onclick]');
+                for (const divBtn of Array.from(divButtons)) {
+                    const divText = (divBtn.textContent || '').toLowerCase().trim();
+                    if (divText === searchLower || divText.includes(searchLower)) {
+                        try {
+                            (divBtn as any).click();
+                            return true;
+                        } catch (e) {
+                            try {
+                                divBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                                return true;
+                            } catch (e2) {
+                                continue;
+                            }
+                        }
+                    }
+                }
+                
+                return false;
+            }, target);
+            
+            if (found) {
+                log(`✅ [ULTIMATE-JS${framePath}] Found and clicked via ultimate JS querySelector: "${target}"`);
+                await frame.waitForTimeout(800); // Wait longer for action to process
+                return true;
+            }
+        } catch (e: any) {
+            log(`   ℹ️ Ultimate JS fallback failed: ${e.message}`);
         }
 
         // PATTERN 4: Search in overlay/modal windows (for elements like "Customer Maintenance", etc)
@@ -1777,19 +1947,46 @@ async function searchInPageOverlays(target: string, action: 'click' | 'fill', fi
             const overlay = allOverlays[overlayIdx];
 
             try {
-                // Don't skip based on visibility - search anyway
-                // The overlay might be visible but individual elements might show as hidden
+                // CHECK: Verify overlay is actually visible before searching
+                const isOverlayVisible = await overlay.evaluate((el: any) => {
+                    const style = window.getComputedStyle(el);
+                    const visible = style.display !== 'none' && 
+                                   style.visibility !== 'hidden' &&
+                                   style.opacity !== '0' &&
+                                   Number(style.opacity) > 0.1;
+                    
+                    const rect = el.getBoundingClientRect();
+                    const inViewport = rect.width > 0 && rect.height > 0;
+                    
+                    return visible && inViewport;
+                }).catch(() => false);
+                
+                if (!isOverlayVisible) {
+                    log(`   🎨 Searching in Overlay[${overlayIdx}]... (skipped - not visible)`);
+                    continue; // Skip invisible overlays
+                }
                 
                 const overlaySummary = `Overlay[${overlayIdx}]`;
                 log(`   🎨 Searching in ${overlaySummary}...`);
 
                 // CLICK ACTION IN OVERLAY
                 if (action === 'click') {
-                    // Strategy 1: Direct JavaScript search WITHIN overlay
+                    // Strategy 1: Direct JavaScript search WITHIN overlay WITH VISIBILITY CHECK
                     // This bypasses Playwright's visibility checks
                     try {
                         const found = await overlay.evaluate((containerEl: any, searchTarget: string) => {
                             const searchLower = searchTarget.toLowerCase();
+                            
+                            // FIRST: Check if overlay itself is visible
+                            const overlayStyle = window.getComputedStyle(containerEl);
+                            const overlayVisible = overlayStyle.display !== 'none' && 
+                                                 overlayStyle.visibility !== 'hidden' &&
+                                                 overlayStyle.opacity !== '0';
+                            
+                            if (!overlayVisible) {
+                                console.log(`[OVERLAY-CLICK] Overlay NOT visible - skipping`);
+                                return false;
+                            }
                             
                             // Walk through ALL elements in this container
                             const walker = document.createTreeWalker(
@@ -1811,7 +2008,15 @@ async function searchInPageOverlays(target: string, action: 'click' | 'fill', fi
                                 
                                 // Check if target matches
                                 if (allText.includes(searchLower) || onclick.includes(searchLower)) {
-                                    // Check if element is clickable
+                                    // Check if element is visible AND clickable
+                                    const elStyle = window.getComputedStyle(el);
+                                    const elVisible = elStyle.display !== 'none' && 
+                                                     elStyle.visibility !== 'hidden' &&
+                                                     elStyle.opacity !== '0';
+                                    
+                                    const rect = el.getBoundingClientRect();
+                                    const inViewport = rect.width > 0 && rect.height > 0;
+                                    
                                     const isClickable = (
                                         el.tagName === 'BUTTON' || 
                                         el.getAttribute('role') === 'button' ||
@@ -1823,9 +2028,12 @@ async function searchInPageOverlays(target: string, action: 'click' | 'fill', fi
                                         className.includes('button')
                                     );
                                     
-                                    if (isClickable) {
-                                        console.log(`[OVERLAY-JS] Found clickable: ${searchTarget}`);
-                                        el.click();
+                                    if (isClickable && elVisible && inViewport) {
+                                        console.log(`[OVERLAY-CLICK] Found visible clickable: ${searchTarget}`);
+                                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                        setTimeout(() => {
+                                            (el as HTMLElement).click();
+                                        }, 100);
                                         return true;
                                     }
                                 }
@@ -1836,6 +2044,7 @@ async function searchInPageOverlays(target: string, action: 'click' | 'fill', fi
                         
                         if (found) {
                             log(`   ✅ [OVERLAY CLICK-JS] Clicked: "${target}"`);
+                            await state.page.waitForTimeout(500); // Wait for click to process
                             return true;
                         }
                     } catch (jsError) {
@@ -1883,10 +2092,22 @@ async function searchInPageOverlays(target: string, action: 'click' | 'fill', fi
 
                 // FILL ACTION IN OVERLAY
                 if (action === 'fill') {
-                    // Strategy 1: Direct JavaScript fill
+                    // Strategy 1: Direct JavaScript fill WITH VISIBILITY CHECK
                     try {
                         const filled = await overlay.evaluate((containerEl: any, searchTarget: string, fillVal: string) => {
                             const searchLower = searchTarget.toLowerCase();
+                            
+                            // FIRST: Check if overlay itself is visible
+                            const overlayStyle = window.getComputedStyle(containerEl);
+                            const overlayVisible = overlayStyle.display !== 'none' && 
+                                                 overlayStyle.visibility !== 'hidden' &&
+                                                 overlayStyle.opacity !== '0';
+                            
+                            if (!overlayVisible) {
+                                console.log(`[OVERLAY-FILL] Overlay NOT visible - skipping`);
+                                return false;
+                            }
+                            
                             const allInputs = containerEl.querySelectorAll('input, textarea');
                             
                             for (const inp of Array.from(allInputs)) {
@@ -1900,12 +2121,27 @@ async function searchInPageOverlays(target: string, action: 'click' | 'fill', fi
                                 const allAttrs = `${title} ${placeholder} ${ariaLabel} ${name} ${id}`;
                                 
                                 if (allAttrs.includes(searchLower)) {
-                                    el.value = fillVal;
-                                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                                    el.dispatchEvent(new Event('blur', { bubbles: true }));
-                                    console.log(`[OVERLAY-JS-FILL] Filled: ${searchTarget} = ${fillVal}`);
-                                    return true;
+                                    // CHECK: Element must be visible AND enabled
+                                    const elStyle = window.getComputedStyle(el);
+                                    const elVisible = elStyle.display !== 'none' && 
+                                                     elStyle.visibility !== 'hidden' &&
+                                                     !el.disabled;
+                                    
+                                    const rect = el.getBoundingClientRect();
+                                    const inViewport = rect.width > 0 && rect.height > 0;
+                                    
+                                    if (elVisible && inViewport) {
+                                        console.log(`[OVERLAY-JS-FILL] Found visible field: ${searchTarget}`);
+                                        el.focus();
+                                        el.value = fillVal;
+                                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                                        el.dispatchEvent(new Event('blur', { bubbles: true }));
+                                        console.log(`[OVERLAY-JS-FILL] Filled: ${searchTarget} = ${fillVal}`);
+                                        return true;
+                                    } else {
+                                        console.log(`[OVERLAY-JS-FILL] Field found but NOT visible: ${searchTarget}`);
+                                    }
                                 }
                             }
                             
@@ -1914,6 +2150,7 @@ async function searchInPageOverlays(target: string, action: 'click' | 'fill', fi
 
                         if (filled) {
                             log(`   ✅ [OVERLAY FILL-JS] Filled: "${target}" = "${fillValue}"`);
+                            await state.page.waitForTimeout(300); // Wait for events to process
                             return true;
                         }
                     } catch (jsError) {
@@ -2793,13 +3030,20 @@ async function getAllPageElements(): Promise<any[]> {
                         const ariaLabel = el.getAttribute('aria-label') || '';
                         const role = el.getAttribute('role') || '';
                         
-                        // Get element visibility
+                        // Get element visibility - STRICT FILTERING FOR CURRENT PAGE ONLY
                         const style = window.getComputedStyle(el);
-                        // For overlay elements, be more lenient - check if element is actually in viewport or has dimensions
-                        const isVisible = style.display !== 'none' && 
-                                        (style.visibility !== 'hidden' || style.opacity !== '0') &&
-                                        ((el as any).offsetWidth > 0 || (el as any).clientWidth > 0) &&
-                                        ((el as any).offsetHeight > 0 || (el as any).clientHeight > 0);
+                        
+                        // Element must be ACTUALLY VISIBLE on current page (not hidden or from previous page)
+                        const hasVisibleDimensions = (el as any).offsetWidth > 0 && (el as any).offsetHeight > 0;
+                        const isDisplayed = style.display !== 'none';
+                        const isNotHidden = style.visibility !== 'hidden' && parseFloat(style.opacity) > 0.1;
+                        
+                        // CRITICAL: Check if element is in viewport (not from previous page)
+                        const rect = el.getBoundingClientRect();
+                        const isInViewport = rect.width > 0 && rect.height > 0;
+                        
+                        // Element is visible ONLY if ALL conditions are true
+                        const isVisible = hasVisibleDimensions && isDisplayed && isNotHidden && isInViewport;
                         
                         // Determine element type
                         let elementType = '';
@@ -2870,9 +3114,6 @@ async function getAllPageElements(): Promise<any[]> {
                             return;
                         }
                         seen.add(uniqueKey);
-                        
-                        // Get element position
-                        const rect = el.getBoundingClientRect();
                         
                         // Use display name as primary label, fallback to id/name
                         const label = displayName || id || name || `${elementType}_${elementIndex}`;
@@ -3322,7 +3563,23 @@ async function getAllPageElements(): Promise<any[]> {
                 return items;
             }
 
-            return items.slice(0, 500); // Increased limit to 500 to include overlay and shadow elements
+            // FILTER: Only return VISIBLE elements from the CURRENT PAGE (not from previous pages)
+            const visibleElements = items.filter((el: any) => {
+                // Must be visible on screen
+                if (!el.visible) return false;
+                
+                // Must be an interactive element or have meaningful text/label
+                if (!el.interactive && !el.label) return false;
+                
+                // For text elements, only show if they have meaningful content
+                if (el.type && el.type.startsWith('text-') && (!el.text || el.text.length < 3)) {
+                    return false;
+                }
+                
+                return true;
+            });
+
+            return visibleElements.slice(0, 500); // Limit to 500 visible elements
         });
         
         if (!elements || !Array.isArray(elements)) {
@@ -3970,6 +4227,7 @@ const htmlUI = `
         .file-input-wrapper {
             position: relative;
             margin-bottom: 30px;
+            z-index: 1;
         }
         .file-input { display: none; }
         .file-input-label {
@@ -3983,6 +4241,9 @@ const htmlUI = `
             transition: all 0.3s;
             color: #667eea;
             font-weight: 500;
+            position: relative;
+            z-index: 1;
+            pointer-events: auto;
         }
         .file-input-label:hover { background: #e8e8ff; border-color: #764ba2; }
         .file-name { color: #333; margin-top: 10px; font-size: 14px; font-weight: 500; }
@@ -3991,6 +4252,8 @@ const htmlUI = `
             grid-template-columns: 1fr 1fr;
             gap: 12px;
             margin-bottom: 20px;
+            position: relative;
+            z-index: 10;
         }
         .controls-full { grid-column: 1 / -1; }
         button {
@@ -4003,11 +4266,14 @@ const htmlUI = `
             transition: all 0.3s;
             text-transform: uppercase;
             letter-spacing: 0.5px;
+            position: relative;
+            z-index: 100;
         }
         .btn-primary {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             grid-column: 1 / -1;
+            z-index: 100;
         }
         .btn-primary:hover:not(:disabled) {
             transform: translateY(-2px);
