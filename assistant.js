@@ -59,7 +59,7 @@ let state = {
 };
 let logMessages = [];
 let allPages = []; // Track all open pages/tabs
-let windowHierarchy = new Map(); // Track nested windows with timestamp
+let windowHierarchy = new Map(); // Track nested windows with timestamp, title, and URL
 let currentSearchContext = null; // Live search status
 let latestSubwindow = null; // Track the most recently opened subwindow
 /* ============== UTILITY FUNCTIONS ============== */
@@ -101,45 +101,99 @@ async function setupPageListeners(page) {
         const parentLevel = windowHierarchy.get(page)?.level || 0;
         const childLevel = parentLevel + 1;
         const openedAt = Date.now();
-        log(`🪟 POPUP OPENED! Nested window (Level ${childLevel}) - PRIORITY: SEARCH THIS FIRST`);
+        // Wait for popup to load and get its title
+        await popup.waitForLoadState('domcontentloaded').catch(() => { });
+        await popup.waitForTimeout(500);
+        const popupTitle = await popup.title().catch(() => 'Unknown');
+        const popupUrl = popup.url();
+        log(`🪟 ╔════════════════════════════════════════╗`);
+        log(`🪟 ║ 🆕 SUBWINDOW DETECTED! ║`);
+        log(`🪟 ║ Level: ${childLevel} | Title: "${popupTitle}" ║`);
+        log(`🪟 ║ URL: ${popupUrl} ║`);
+        log(`🪟 ║ PRIORITY: SEARCH THIS FIRST ║`);
+        log(`🪟 ╚════════════════════════════════════════╝`);
         allPages.push(popup);
         latestSubwindow = popup; // Track as latest
-        // Track window hierarchy with timestamp
-        windowHierarchy.set(popup, { parentPage: page, level: childLevel, childPages: [], openedAt });
+        // Track window hierarchy with timestamp, title, and URL
+        windowHierarchy.set(popup, { parentPage: page, level: childLevel, childPages: [], openedAt, title: popupTitle, url: popupUrl });
         if (windowHierarchy.has(page)) {
             windowHierarchy.get(page).childPages.push(popup);
         }
-        // Wait for popup to load
-        await popup.waitForLoadState('domcontentloaded').catch(() => { });
-        await popup.waitForTimeout(500); // Extra wait for UI to render
         // Setup nested listeners for this popup (to catch sub-sub-windows)
         await setupPageListeners(popup);
-        log(`🪟 [PRIORITY WINDOW] Popup added to search queue (Level ${childLevel}) - WILL SEARCH THIS FIRST`);
+        log(`🪟 [PRIORITY WINDOW] Subwindow "${popupTitle}" added to search queue (Level ${childLevel})`);
         log(`🪟 Total windows open: ${allPages.length}`);
     });
-    // Listen for new pages in context (catch windows opened via window.open() etc)
-    state.context?.on('page', async (newPage) => {
-        if (!allPages.includes(newPage) && !newPage.isClosed()) {
-            const parentLevel = windowHierarchy.get(page)?.level || 0;
-            const childLevel = parentLevel + 1;
-            const openedAt = Date.now();
-            log(`🪟 NEW PAGE OPENED! Context page (Level ${childLevel}) - PRIORITY: SEARCH THIS FIRST`);
-            allPages.push(newPage);
-            latestSubwindow = newPage; // Track as latest
-            // Track hierarchy with timestamp
-            windowHierarchy.set(newPage, { parentPage: page, level: childLevel, childPages: [], openedAt });
-            if (windowHierarchy.has(page)) {
-                windowHierarchy.get(page).childPages.push(newPage);
+    // NOTE: context.on('page') listener is now set up at context CREATION time in runAutomation()
+    // This ensures ALL windows are caught, regardless of when they open
+    // This setupPageListeners() function handles page.on('popup') for nested popups within a page
+}
+/**
+ * Detect and log all modals/dialogs in the current page
+ */
+async function detectAndLogModals() {
+    if (!state.page || state.page.isClosed())
+        return;
+    try {
+        const modals = await state.page.evaluate(() => {
+            const modalSelectors = [
+                { selector: '[role="dialog"]', type: 'DIALOG' },
+                { selector: '[role="alertdialog"]', type: 'ALERT DIALOG' },
+                { selector: '.modal', type: 'MODAL (class)' },
+                { selector: '.overlay', type: 'OVERLAY (class)' },
+                { selector: '.popup', type: 'POPUP (class)' },
+                { selector: '[class*="modal"]', type: 'MODAL (contains)' },
+                { selector: '[class*="dialog"]', type: 'DIALOG (contains)' },
+                { selector: '[class*="overlay"]', type: 'OVERLAY (contains)' }
+            ];
+            const foundModals = [];
+            for (const { selector, type } of modalSelectors) {
+                try {
+                    const elements = document.querySelectorAll(selector);
+                    for (let i = 0; i < elements.length; i++) {
+                        const el = elements[i];
+                        const isVisible = el.offsetParent !== null || window.getComputedStyle(el).display !== 'none';
+                        if (isVisible) {
+                            const text = el.textContent?.trim().slice(0, 100) || 'No text';
+                            const title = el.getAttribute('title') || '';
+                            const ariaLabel = el.getAttribute('aria-label') || '';
+                            foundModals.push({
+                                type,
+                                selector,
+                                text,
+                                title,
+                                ariaLabel,
+                                visible: true
+                            });
+                        }
+                    }
+                }
+                catch (e) {
+                    // Selector error, continue
+                }
             }
-            // Wait for page to load
-            await newPage.waitForLoadState('domcontentloaded').catch(() => { });
-            await newPage.waitForTimeout(500); // Extra wait for UI to render
-            // Setup listeners recursively for nested popups
-            await setupPageListeners(newPage);
-            log(`🪟 [PRIORITY WINDOW] Page added to search queue (Level ${childLevel}) - WILL SEARCH THIS FIRST`);
-            log(`🪟 Total windows open: ${allPages.length}`);
+            return foundModals;
+        });
+        if (modals.length > 0) {
+            log(`\n📋 ╔════════════════════════════════════════╗`);
+            log(`📋 ║ 🔍 MODALS DETECTED IN PAGE ║`);
+            log(`📋 ║ Total: ${modals.length} visible modal(s) ║`);
+            log(`📋 ╚════════════════════════════════════════╝`);
+            modals.forEach((modal, idx) => {
+                log(`   ${idx + 1}. [${modal.type}]`);
+                if (modal.ariaLabel)
+                    log(`      aria-label: "${modal.ariaLabel}"`);
+                if (modal.title)
+                    log(`      title: "${modal.title}"`);
+                if (modal.text)
+                    log(`      content: "${modal.text}"`);
+            });
+            log('');
         }
-    });
+    }
+    catch (e) {
+        // Silent fail
+    }
 }
 /**
  * Build a visual string representation of window hierarchy
@@ -739,12 +793,80 @@ async function searchInAllFrames(target, action, fillValue) {
                     divButtonCount: document.querySelectorAll('[role="button"], [onclick]').length,
                     inputCount: document.querySelectorAll('input').length,
                     iframeCount: document.querySelectorAll('iframe').length,
+                    iframeNames: Array.from(document.querySelectorAll('iframe')).map(iframe => ({
+                        name: iframe.getAttribute('name') || 'unnamed',
+                        id: iframe.getAttribute('id') || 'no-id',
+                        src: iframe.getAttribute('src') || 'no-src'
+                    })),
                     allClickable: document.querySelectorAll('button, [role="button"], [onclick], a[href], input[type="button"], input[type="submit"]').length
                 })).catch(() => null);
                 if (frameDetails) {
                     log(`   📄 Frame content: ${frameDetails.allClickable} clickable elements (${frameDetails.buttonCount} buttons, ${frameDetails.divButtonCount} div-buttons, ${frameDetails.inputCount} inputs)`);
                     if (frameDetails.iframeCount > 0) {
-                        log(`   🔗 This frame contains ${frameDetails.iframeCount} nested iframe(s)`);
+                        const iframeNamesList = frameDetails.iframeNames.map((f) => `[${f.name}${f.id !== 'no-id' ? `#${f.id}` : ''}]`).join(', ');
+                        log(`   🔗 This frame contains ${frameDetails.iframeCount} nested iframe(s): ${iframeNamesList}`);
+                        // Get all child frames (includes cross-origin accessible frames)
+                        const allChildFrames = frame.childFrames();
+                        log(`   📍 Total child frames (Playwright detected): ${allChildFrames.length}`);
+                        // Search for clickable elements in each iframe using Playwright's frameLocator
+                        for (let iIdx = 0; iIdx < frameDetails.iframeNames.length; iIdx++) {
+                            const iframeInfo = frameDetails.iframeNames[iIdx];
+                            const iframeLabel = `${iframeInfo.name}${iframeInfo.id !== 'no-id' ? `#${iframeInfo.id}` : ''}`;
+                            try {
+                                // Try using Playwright's frameLocator API for better iframe access
+                                let selector = '';
+                                // Build selector based on available attributes
+                                if (iframeInfo.id !== 'no-id') {
+                                    selector = `#${iframeInfo.id}`;
+                                }
+                                else if (iframeInfo.name !== 'unnamed') {
+                                    selector = `iframe[name="${iframeInfo.name}"]`;
+                                }
+                                else {
+                                    selector = `iframe[src="${iframeInfo.src}"]`;
+                                }
+                                // Wait for iframe to be visible and loaded
+                                await frame.locator(selector).first().waitFor({ state: 'visible', timeout: 2000 }).catch(() => { });
+                                await frame.waitForTimeout(300); // Give iframe content time to load
+                                const iframeFrame = frame.frameLocator(selector).first();
+                                // Try to wait for iframe content to load
+                                await iframeFrame.locator('body').waitFor({ state: 'visible', timeout: 2000 }).catch(() => { });
+                                // Get clickable elements from within the iframe
+                                const clickableLocator = iframeFrame.locator('button, [role="button"], [onclick], a[href], input[type="button"], input[type="submit"]');
+                                const clickableCount = await clickableLocator.count();
+                                if (clickableCount > 0) {
+                                    const clickableElements = await clickableLocator.allTextContents();
+                                    const cleanedElements = clickableElements
+                                        .map((text) => text.trim())
+                                        .filter((text) => text.length > 0 && text.length < 50)
+                                        .slice(0, 30); // First 30 elements
+                                    log(`      ├─ iframe [${iframeLabel}]: ${clickableCount} clickable elements → ${cleanedElements.join(' | ')}`);
+                                }
+                                else {
+                                    // Even if no clickable elements, try to get all text content from the iframe
+                                    const allText = await iframeFrame.locator('body').allTextContents().catch(() => []);
+                                    const bodyText = allText.join(' ').trim().slice(0, 100);
+                                    log(`      ├─ iframe [${iframeLabel}]: (0 clickable) | Content: "${bodyText}${bodyText.length === 100 ? '...' : ''}"`);
+                                }
+                            }
+                            catch (err) {
+                                // For cross-origin iframes, try to access via Playwright's child frames
+                                try {
+                                    const matchingFrame = allChildFrames[iIdx];
+                                    if (matchingFrame) {
+                                        const crossOriginText = await matchingFrame.locator('body').allTextContents().catch(() => []);
+                                        const bodyContent = crossOriginText.join(' ').trim().slice(0, 150);
+                                        log(`      ├─ iframe [${iframeLabel}] (cross-origin): "${bodyContent}${bodyContent.length === 150 ? '...' : ''}"`);
+                                    }
+                                    else {
+                                        log(`      ├─ iframe [${iframeLabel}]: (not accessible - cross-origin)`);
+                                    }
+                                }
+                                catch (crossOriginErr) {
+                                    log(`      ├─ iframe [${iframeLabel}]: (not accessible - cross-origin)`);
+                                }
+                            }
+                        }
                     }
                 }
                 log(`🔍 [${framePath}] Searching for: "${target}"`);
@@ -783,11 +905,31 @@ async function searchInAllFrames(target, action, fillValue) {
  * Recursively search through nested windows (sub, sub-sub, etc.)
  */
 async function searchInAllSubwindows(target, action, fillValue) {
-    if (allPages.length <= 1)
-        return false; // Only main page open
     try {
         log(`\n🪟 ========== [SEARCH STRATEGY: PRIORITY WINDOW FIRST] ==========`);
         log(`🪟 Total windows available: ${allPages.length}`);
+        // Log details of all open windows (always show, even if only 1)
+        for (let wIdx = 0; wIdx < allPages.length; wIdx++) {
+            const page = allPages[wIdx];
+            const isClosed = page.isClosed();
+            const hierarchy = windowHierarchy.get(page);
+            const level = hierarchy?.level || 0;
+            const isMain = page === state.page;
+            const isLatest = page === latestSubwindow;
+            try {
+                const pageTitle = await page.title().catch(() => 'Unknown');
+                const pageUrl = page.url();
+                const windowLabel = isMain ? '🏠 MAIN' : `📍 SUBWINDOW (Level ${level})`;
+                const priority = isLatest ? ' ⭐ [LATEST - WILL SEARCH FIRST]' : '';
+                const status = isClosed ? ' ❌ CLOSED' : ' ✅ OPEN';
+                log(`   ${windowLabel}: "${pageTitle}" | ${pageUrl}${priority}${status}`);
+            }
+            catch (err) {
+                log(`   📍 WINDOW ${wIdx}: (error reading details - ${err.message})`);
+            }
+        }
+        if (allPages.length <= 1)
+            return false; // Only main page open
         // PRIORITY 1: Search latest opened subwindow FIRST if it exists
         if (latestSubwindow && !latestSubwindow.isClosed() && latestSubwindow !== state.page) {
             log(`\n🎯 [PRIORITY 1] Searching LATEST OPENED SUBWINDOW FIRST (e.g., Customer Maintenance)`);
@@ -1126,6 +1268,7 @@ async function executeClickInFrame(frame, target, framePath) {
             // Get ALL potentially clickable elements
             const clickableElements = await frame.locator('button, [role="button"], input[type="button"], input[type="submit"], a[href], [onclick], div[onclick], span[onclick], [style*="cursor:pointer"]').all();
             log(`   [Frame search] Found ${clickableElements.length} clickable elements to check`);
+            log(`   🔍 [PRIORITY CHECK 3] Checking ${clickableElements.length} clickable elements for: "${target}"`);
             for (let i = 0; i < clickableElements.length; i++) {
                 try {
                     const el = clickableElements[i];
@@ -1138,10 +1281,12 @@ async function executeClickInFrame(frame, target, framePath) {
                     const id = await el.getAttribute('id').catch(() => '');
                     const className = await el.getAttribute('class').catch(() => '');
                     const innerHTML = await el.innerHTML().catch(() => '');
+                    const tagName = await el.evaluate((e) => e.tagName).catch(() => 'UNKNOWN');
                     // Combine all searchable text
                     const allText = `${text} ${ariaLabel} ${title} ${dataTestId} ${value} ${id} ${className} ${innerHTML}`.toLowerCase();
                     // Check if target matches
                     if (allText.includes(targetLower)) {
+                        log(`      ✓ FOUND MATCH [${tagName}#${id}]: text="${text.slice(0, 30)}" | title="${title}" | value="${value}"`);
                         // Try to click with multiple methods
                         try {
                             // Method 1: Force click
@@ -1151,6 +1296,7 @@ async function executeClickInFrame(frame, target, framePath) {
                             return true;
                         }
                         catch (e1) {
+                            log(`      ⚠️  Force click failed, trying JavaScript...`);
                             // Method 2: JavaScript click
                             try {
                                 const clicked = await el.evaluate((element) => {
@@ -1170,6 +1316,7 @@ async function executeClickInFrame(frame, target, framePath) {
                                 }
                             }
                             catch (e2) {
+                                log(`      ⚠️  JavaScript click failed, continuing...`);
                                 // Continue to next element
                             }
                         }
@@ -1602,8 +1749,9 @@ async function executeFillInFrame(frame, target, fillValue, framePath) {
                     const name = (el.getAttribute('name') || '').toLowerCase();
                     const id = (el.getAttribute('id') || '').toLowerCase();
                     const label = (el.parentElement?.textContent || '').toLowerCase();
-                    // Comprehensive search across all attributes and context
-                    const allText = `${title} ${placeholder} ${ariaLabel} ${name} ${id} ${label}`;
+                    const parentLabel = (el.parentElement?.parentElement?.textContent || '').toLowerCase();
+                    // Comprehensive search across all attributes and context - including parent labels
+                    const allText = `${title} ${placeholder} ${ariaLabel} ${name} ${id} ${label} ${parentLabel}`;
                     if (allText.includes(searchLower)) {
                         // DIRECT FILL - no visibility checks, no restrictions
                         try {
@@ -1615,6 +1763,7 @@ async function executeFillInFrame(frame, target, fillValue, framePath) {
                             el.dispatchEvent(new Event('change', { bubbles: true }));
                             el.dispatchEvent(new Event('blur', { bubbles: true }));
                             el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                            el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
                             return true;
                         }
                         catch (e) {
@@ -1950,6 +2099,83 @@ async function searchInPageOverlays(target, action, fillValue) {
             return false;
     }
     try {
+        // PRIORITY 0: Quick search for visible input fields and buttons in modal dialogs FIRST
+        // This handles modal dialogs that might not be caught by the overlay scanning
+        const quickDialogSearch = await state.page.evaluate(({ searchText, fillVal, isAction }) => {
+            const searchLower = searchText.toLowerCase();
+            // For FILL action: Look for input fields
+            if (isAction === 'fill') {
+                const allInputs = document.querySelectorAll('input[type="text"], textarea, input:not([type])');
+                for (const input of Array.from(allInputs)) {
+                    const el = input;
+                    // Get all possible identifiers
+                    const title = (el.getAttribute('title') || '').toLowerCase();
+                    const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
+                    const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                    const name = (el.getAttribute('name') || '').toLowerCase();
+                    const id = (el.getAttribute('id') || '').toLowerCase();
+                    // Check nearby labels and parent text
+                    let nearbyText = '';
+                    if (el.parentElement) {
+                        nearbyText += (el.parentElement.textContent || '').toLowerCase();
+                    }
+                    if (el.parentElement?.parentElement) {
+                        nearbyText += ' ' + (el.parentElement.parentElement.textContent || '').toLowerCase();
+                    }
+                    const allText = `${title} ${placeholder} ${ariaLabel} ${name} ${id} ${nearbyText}`;
+                    // Check if this field matches what we're looking for
+                    if (allText.includes(searchLower)) {
+                        // Check if element is visible (it might be in a modal)
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            // Element is visible - FILL it
+                            el.focus();
+                            el.select();
+                            el.value = fillVal;
+                            // Dispatch events to trigger any change handlers
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                            el.dispatchEvent(new Event('blur', { bubbles: true }));
+                            el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                            el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
+                            return { found: true, action: 'fill', target: searchText };
+                        }
+                    }
+                }
+            }
+            // For CLICK action: Look for buttons and clickable elements
+            if (isAction === 'click') {
+                const clickables = document.querySelectorAll('button, input[type="button"], input[type="submit"], a, [role="button"]');
+                for (const elem of Array.from(clickables)) {
+                    const el = elem;
+                    const text = (el.textContent || '').toLowerCase();
+                    const value = (el.getAttribute('value') || '').toLowerCase();
+                    const title = (el.getAttribute('title') || '').toLowerCase();
+                    const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                    const allText = `${text} ${value} ${title} ${ariaLabel}`;
+                    if (allText.includes(searchLower)) {
+                        // Check if element is visible
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            // Element is visible - CLICK it
+                            el.click();
+                            return { found: true, action: 'click', target: searchText };
+                        }
+                    }
+                }
+            }
+            return { found: false };
+        }, { searchText: target, fillVal: action === 'fill' ? fillValue : null, isAction: action });
+        if (quickDialogSearch && quickDialogSearch.found) {
+            if (action === 'fill') {
+                log(`✅ [QUICK MODAL SEARCH] Filled: "${target}" = "${fillValue}"`);
+            }
+            else {
+                log(`✅ [QUICK MODAL SEARCH] Clicked: "${target}"`);
+            }
+            await state.page.waitForTimeout(300);
+            return true;
+        }
         log(`\n🎨 [OVERLAY PRIORITY] Searching for overlays/modals/dialogs in main page...`);
         // AGGRESSIVE APPROACH: Find all visible overlays by scanning DOM directly
         // Look for any container that appears to be an overlay/dialog
@@ -3837,7 +4063,37 @@ async function executeStep(stepData) {
                 throw new Error('No valid page available');
             }
         }
-        log(`[${stepId}] ${action}: ${target}`);
+        // ===== WINDOW & MODAL DETECTION =====
+        // Log all open windows
+        log(`\n📊 ═══════════════════════════════════════════════`);
+        log(`📊 OPEN WINDOWS SUMMARY:`);
+        log(`📊 Total Windows: ${allPages.length}`);
+        for (let i = 0; i < allPages.length; i++) {
+            const page = allPages[i];
+            if (!page.isClosed()) {
+                const info = windowHierarchy.get(page);
+                const title = info?.title || (await page.title().catch(() => 'Unknown'));
+                const level = info?.level || 0;
+                const isActive = page === state.page ? '✅ ACTIVE' : '   ';
+                log(`   ${isActive} [L${level}] "${title}"`);
+            }
+        }
+        // Detect and log modals in current page
+        await detectAndLogModals();
+        log(`📊 ═══════════════════════════════════════════════\n`);
+        // Get current window label for logging
+        const isMainWindow = state.page === allPages[0];
+        const windowInfo = windowHierarchy.get(state.page);
+        const windowLevel = windowInfo?.level || 0;
+        const storedTitle = windowInfo?.title || (await state.page.title().catch(() => 'Unknown'));
+        let windowLabel = '';
+        if (isMainWindow) {
+            windowLabel = `🏠 MAIN WINDOW`;
+        }
+        else {
+            windowLabel = `📍 SUBWINDOW (L${windowLevel}) "${storedTitle}"`;
+        }
+        log(`[${stepId}] ${action}: ${target} | ${windowLabel}`);
         if (action === 'OPEN' || action === 'OPENURL') {
             for (let i = 1; i <= 3; i++) {
                 try {
@@ -3876,8 +4132,14 @@ async function executeStep(stepData) {
                 await new Promise(resolve => setTimeout(resolve, 800));
                 // Check if new window/tab opened after click
                 await switchToLatestPage();
+                // Log window after action
+                const isMainWindow = state.page === allPages[0];
+                const windowInfo = windowHierarchy.get(state.page);
+                const windowLevel = windowInfo?.level || 0;
+                const storedTitle = windowInfo?.title || (await state.page.title().catch(() => 'Unknown'));
+                const windowLabel = isMainWindow ? '🏠 MAIN WINDOW' : `📍 SUBWINDOW (L${windowLevel}) "${storedTitle}"`;
                 result.status = 'PASS';
-                result.actualOutput = `Clicked: ${target}`;
+                result.actualOutput = `Clicked: ${target} | ${windowLabel}`;
             }
             else {
                 result.status = 'FAIL';
@@ -3889,8 +4151,14 @@ async function executeStep(stepData) {
             const success = await executeWithPageReady(async () => await fillWithRetry(target, data, 5), `${stepId}_FILL`);
             if (success) {
                 await new Promise(resolve => setTimeout(resolve, 500));
+                // Log window after action
+                const isMainWindow = state.page === allPages[0];
+                const windowInfo = windowHierarchy.get(state.page);
+                const windowLevel = windowInfo?.level || 0;
+                const storedTitle = windowInfo?.title || (await state.page.title().catch(() => 'Unknown'));
+                const windowLabel = isMainWindow ? '🏠 MAIN WINDOW' : `📍 SUBWINDOW (L${windowLevel}) "${storedTitle}"`;
                 result.status = 'PASS';
-                result.actualOutput = `Filled: ${target}`;
+                result.actualOutput = `Filled: ${target} | ${windowLabel}`;
             }
             else {
                 result.status = 'FAIL';
@@ -3907,8 +4175,14 @@ async function executeStep(stepData) {
                 }
                 await executeWithPageReady(async () => state.page.selectOption(target, data, { timeout: 5000 }), `${stepId}_SELECT`);
                 await new Promise(resolve => setTimeout(resolve, 300));
+                // Log window after action
+                const isMainWindow = state.page === allPages[0];
+                const windowInfo = windowHierarchy.get(state.page);
+                const windowLevel = windowInfo?.level || 0;
+                const storedTitle = windowInfo?.title || (await state.page.title().catch(() => 'Unknown'));
+                const windowLabel = isMainWindow ? '🏠 MAIN WINDOW' : `📍 SUBWINDOW (L${windowLevel}) "${storedTitle}"`;
                 result.status = 'PASS';
-                result.actualOutput = `Selected: ${data}`;
+                result.actualOutput = `Selected: ${data} | ${windowLabel}`;
             }
             catch (e) {
                 result.status = 'FAIL';
@@ -4014,11 +4288,57 @@ async function runAutomation(excelFilePath) {
             ignoreHTTPSErrors: true,
             bypassCSP: true
         });
+        // 🎯 CRITICAL: Setup context-level listener IMMEDIATELY (catches window.open() calls)
+        // This MUST be done before any pages are created
+        state.context.on('page', async (newPage) => {
+            if (!allPages.includes(newPage) && !newPage.isClosed()) {
+                await newPage.waitForLoadState('domcontentloaded').catch(() => { });
+                await newPage.waitForTimeout(500);
+                const newPageTitle = await newPage.title().catch(() => 'Unknown');
+                const newPageUrl = newPage.url();
+                log(`\n🪟 ════════════════════════════════════════`);
+                log(`🪟 🆕 CONTEXT: NEW WINDOW/TAB OPENED!`);
+                log(`🪟 Title: "${newPageTitle}"`);
+                log(`🪟 URL: ${newPageUrl}`);
+                log(`🪟 Source: window.open() or target=_blank`);
+                log(`🪟 ════════════════════════════════════════\n`);
+                allPages.push(newPage);
+                latestSubwindow = newPage;
+                // Find parent page
+                const parentPage = state.page || allPages[0];
+                const parentLevel = windowHierarchy.get(parentPage)?.level || 0;
+                const childLevel = parentLevel + 1;
+                const openedAt = Date.now();
+                windowHierarchy.set(newPage, {
+                    parentPage,
+                    level: childLevel,
+                    childPages: [],
+                    openedAt,
+                    title: newPageTitle,
+                    url: newPageUrl
+                });
+                if (windowHierarchy.has(parentPage)) {
+                    windowHierarchy.get(parentPage).childPages.push(newPage);
+                }
+                // Setup listeners on new page for nested popups
+                await setupPageListeners(newPage);
+                log(`🪟 [CONTEXT LISTENER] New window added to allPages (Total: ${allPages.length})\n`);
+            }
+        });
         state.page = await state.context.newPage();
         state.page.setDefaultTimeout(30000);
         state.page.setDefaultNavigationTimeout(30000);
-        // Setup listeners for new windows/tabs
+        // Add main page to tracking
+        allPages.push(state.page);
+        // Setup page-level listeners for popup windows (triggered by page.on('popup'))
         await setupPageListeners(state.page);
+        // Log initial main window
+        const mainPageTitle = await state.page.title().catch(() => 'Untitled');
+        log(`\n🪟 ╔════════════════════════════════════════╗`);
+        log(`🪟 ║ 🏠 MAIN WINDOW OPENED ║`);
+        log(`🪟 ║ Title: "${mainPageTitle}" ║`);
+        log(`🪟 ║ Level: 0 (Main) ║`);
+        log(`🪟 ╚════════════════════════════════════════╝\n`);
         // Log available columns and execution status
         if (rows.length > 0) {
             const firstRow = rows[0];
