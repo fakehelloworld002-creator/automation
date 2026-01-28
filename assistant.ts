@@ -862,6 +862,18 @@ async function searchInLaunchWinFrames(target: string, action: 'click' | 'fill',
                     
                     for (const elem of clickables) {
                         try {
+                            // **CRITICAL**: Check if element is actually visible on screen FIRST
+                            const isVisible = await elem.isVisible().catch(() => false);
+                            if (!isVisible) {
+                                continue; // Skip invisible elements
+                            }
+                            
+                            // Check if element is in viewport (not off-screen)
+                            const boundingBox = await elem.boundingBox().catch(() => null);
+                            if (!boundingBox) {
+                                continue; // Skip elements without bounding box
+                            }
+                            
                             const text = await elem.textContent().catch(() => '');
                             const value = await elem.getAttribute('value').catch(() => '');
                             const title = await elem.getAttribute('title').catch(() => '');
@@ -870,26 +882,41 @@ async function searchInLaunchWinFrames(target: string, action: 'click' | 'fill',
                             const allText = `${text} ${value} ${title} ${ariaLabel}`.toLowerCase();
                             
                             if (allText.includes(target.toLowerCase())) {
-                                log(`      ✓ FOUND: "${text}" - Clicking...`);
+                                log(`      ✓ FOUND VISIBLE: "${text.trim()}" at position [${boundingBox.x.toFixed(0)}, ${boundingBox.y.toFixed(0)}] - Attempting click...`);
                                 
-                                // Try clicking
+                                // Try clicking with verification
+                                let clickSuccess = false;
                                 try {
-                                    await elem.click({ force: true, timeout: 3000 }).catch(() => {});
+                                    await elem.click({ force: true, timeout: 3000 });
+                                    clickSuccess = true;
                                     log(`      ✅ [LAUNCHWIN-CLICK] Successfully clicked "${target}" in ${iframeId}`);
                                     await state.page.waitForTimeout(500);
                                     return true;
                                 } catch (clickErr: any) {
-                                    log(`      ⚠️  Click failed, trying JavaScript...`);
-                                    // Try JavaScript click via element evaluation
+                                    log(`      ⚠️  Playwright click failed (${clickErr.message}), trying JavaScript...`);
+                                }
+                                
+                                // If Playwright click failed, try JavaScript
+                                if (!clickSuccess) {
                                     try {
-                                        await elem.evaluate((el: any) => {
-                                            el.click();
+                                        const jsClickResult = await elem.evaluate((el: any) => {
+                                            try {
+                                                (el as HTMLElement).click();
+                                                return { success: true };
+                                            } catch (e: any) {
+                                                return { success: false, error: e.message };
+                                            }
                                         });
-                                        log(`      ✅ [LAUNCHWIN-CLICK-JS] Clicked "${target}" in ${iframeId}`);
-                                        await state.page.waitForTimeout(500);
-                                        return true;
+                                        
+                                        if (jsClickResult && jsClickResult.success) {
+                                            log(`      ✅ [LAUNCHWIN-CLICK-JS] JavaScript click succeeded for "${target}" in ${iframeId}`);
+                                            await state.page.waitForTimeout(500);
+                                            return true;
+                                        } else {
+                                            log(`      ⚠️  JavaScript click also failed: ${jsClickResult?.error || 'unknown error'}`);
+                                        }
                                     } catch (jsClickErr: any) {
-                                        log(`      ⚠️  JavaScript click also failed`);
+                                        log(`      ⚠️  JavaScript evaluation failed: ${jsClickErr.message}`);
                                     }
                                 }
                             }
@@ -908,6 +935,18 @@ async function searchInLaunchWinFrames(target: string, action: 'click' | 'fill',
                     
                     for (const input of inputs) {
                         try {
+                            // **CRITICAL**: Check if input is actually visible FIRST
+                            const isVisible = await input.isVisible().catch(() => false);
+                            if (!isVisible) {
+                                continue; // Skip invisible inputs
+                            }
+                            
+                            // Check if element is in viewport
+                            const boundingBox = await input.boundingBox().catch(() => null);
+                            if (!boundingBox) {
+                                continue; // Skip inputs without bounding box
+                            }
+                            
                             const placeholder = await input.getAttribute('placeholder').catch(() => '');
                             const title = await input.getAttribute('title').catch(() => '');
                             const name = await input.getAttribute('name').catch(() => '');
@@ -917,28 +956,43 @@ async function searchInLaunchWinFrames(target: string, action: 'click' | 'fill',
                             const allText = `${placeholder} ${title} ${name} ${id} ${ariaLabel}`.toLowerCase();
                             
                             if (allText.includes(target.toLowerCase())) {
-                                log(`      ✓ FOUND: "${title || placeholder || name}" - Filling with "${fillValue}"`);
+                                log(`      ✓ FOUND VISIBLE: "${title || placeholder || name}" at [${boundingBox.x.toFixed(0)}, ${boundingBox.y.toFixed(0)}] - Filling with "${fillValue}"`);
                                 
+                                let fillSuccess = false;
                                 try {
                                     await input.fill(fillValue, { timeout: 2000 });
+                                    fillSuccess = true;
                                     log(`      ✅ [LAUNCHWIN-FILL] Successfully filled "${target}" in ${iframeId}`);
                                     await state.page.waitForTimeout(300);
                                     return true;
                                 } catch (fillErr: any) {
-                                    log(`      ⚠️  Fill failed, trying JavaScript...`);
-                                    // Try JavaScript fill via element evaluation
+                                    log(`      ⚠️  Playwright fill failed (${fillErr.message}), trying JavaScript...`);
+                                }
+                                
+                                // If Playwright fill failed, try JavaScript
+                                if (!fillSuccess) {
                                     try {
-                                        await input.evaluate((el: any, val: string) => {
-                                            (el as HTMLInputElement).value = val;
-                                            el.dispatchEvent(new Event('input', { bubbles: true }));
-                                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                                            el.dispatchEvent(new Event('blur', { bubbles: true }));
+                                        const jsResult = await input.evaluate((el: any, val: string) => {
+                                            try {
+                                                (el as HTMLInputElement).value = val;
+                                                el.dispatchEvent(new Event('input', { bubbles: true }));
+                                                el.dispatchEvent(new Event('change', { bubbles: true }));
+                                                el.dispatchEvent(new Event('blur', { bubbles: true }));
+                                                return { success: true };
+                                            } catch (e: any) {
+                                                return { success: false, error: e.message };
+                                            }
                                         }, fillValue);
-                                        log(`      ✅ [LAUNCHWIN-FILL-JS] Filled "${target}" in ${iframeId}`);
-                                        await state.page.waitForTimeout(300);
-                                        return true;
+                                        
+                                        if (jsResult && jsResult.success) {
+                                            log(`      ✅ [LAUNCHWIN-FILL-JS] JavaScript fill succeeded for "${target}" in ${iframeId}`);
+                                            await state.page.waitForTimeout(300);
+                                            return true;
+                                        } else {
+                                            log(`      ⚠️  JavaScript fill also failed: ${jsResult?.error || 'unknown error'}`);
+                                        }
                                     } catch (jsEvalErr: any) {
-                                        log(`      ⚠️  JavaScript fill also failed`);
+                                        log(`      ⚠️  JavaScript evaluation failed: ${jsEvalErr.message}`);
                                     }
                                 }
                             }
