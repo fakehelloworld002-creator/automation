@@ -27,6 +27,8 @@ interface AutomationState {
     testData: any[] | null;
     isCompleted?: boolean;
     shouldCloseBrowser?: boolean;
+    pauseLoggedOnce?: boolean; // Flag to log pause message only once
+    verboseLogging?: boolean; // Flag to control verbose logging (default false)
 }
 
 interface StepResult {
@@ -50,7 +52,9 @@ let state: AutomationState = {
     selectedExcelFile: null,
     testData: null,
     isCompleted: false,
-    shouldCloseBrowser: false
+    shouldCloseBrowser: false,
+    pauseLoggedOnce: false,
+    verboseLogging: false // Disabled by default to prevent log spam
 };
 
 let logMessages: string[] = [];
@@ -66,7 +70,10 @@ let latestSubwindow: Page | null = null;  // Track the most recently opened subw
  */
 function updateSearchContext(windowPath: string, frameLevel: number, totalFrames: number) {
     currentSearchContext = { windowPath, frameLevel, totalFrames };
-    log(`🔍 [LIVE SEARCH] Searching in: ${windowPath} (Frame ${frameLevel}/${totalFrames})`);
+    // Only log live search at first frame level to avoid spam
+    if (frameLevel === 1) {
+        log(`🔍 [LIVE SEARCH] Searching in: ${windowPath} (Frame ${frameLevel}/${totalFrames})`);
+    }
 }
 
 /**
@@ -830,9 +837,43 @@ async function deepDOMSearch(target: string, action: 'click' | 'fill', fillValue
             }, { searchText: target, fillValue });
 
             if (filled) {
-                log(`✓ Deep DOM search found and filled element`);
-                await state.page.waitForTimeout(500);
-                return true;
+                // VALIDATE: Verify fill actually persisted in the DOM
+                await state.page.waitForTimeout(300);
+                const verifyValue = await state.page.evaluate(({ searchText, expectedValue }) => {
+                    // Check by label
+                    const labels = Array.from(document.querySelectorAll('label'));
+                    for (const label of labels) {
+                        const labelText = label.textContent?.toLowerCase() || '';
+                        if (labelText.includes(searchText.toLowerCase())) {
+                            const forAttr = label.getAttribute('for');
+                            let input: any = null;
+                            if (forAttr) input = document.getElementById(forAttr);
+                            else input = label.querySelector('input, textarea');
+                            if (input) return (input as any).value || 'empty';
+                        }
+                    }
+                    // Check by attributes
+                    const inputs = Array.from(document.querySelectorAll('input, textarea'));
+                    for (const inp of inputs) {
+                        const placeholder = (inp as any).placeholder?.toLowerCase() || '';
+                        const ariaLabel = inp.getAttribute('aria-label')?.toLowerCase() || '';
+                        const name = (inp as any).name?.toLowerCase() || '';
+                        const id = (inp as any).id?.toLowerCase() || '';
+                        const allText = `${placeholder} ${ariaLabel} ${name} ${id}`;
+                        if (allText.includes(searchText.toLowerCase())) {
+                            return (inp as any).value || 'empty';
+                        }
+                    }
+                    return 'not-found';
+                }, { searchText: target, expectedValue: fillValue });
+
+                if (verifyValue && verifyValue !== 'empty' && verifyValue !== 'not-found') {
+                    log(`✅ [DEEP FILL] Filled: "${target}" = "${fillValue}" ✓ VERIFIED`);
+                    return true;
+                } else {
+                    log(`❌ [DEEP FILL] VALIDATION FAILED: "${target}" was NOT persisted! (Expected: "${fillValue}" | Actual: "${verifyValue}")`);
+                    return false;
+                }
             }
         }
 
@@ -1249,10 +1290,12 @@ async function searchInAllFrames(target: string, action: 'click' | 'fill', fillV
         
         if (framesToSearch.length === 0) return false;
 
-        log(`🔍 [FRAME SEARCH] Found ${framesToSearch.length} frame(s) to search`);
-        
-        // DIAGNOSTIC: Log frame details on first search of page
-        await logPageStructureDiagnostics(target);
+        // Only log frame search if verbose logging enabled
+        if (state.verboseLogging) {
+            log(`🔍 [FRAME SEARCH] Found ${framesToSearch.length} frame(s) to search`);
+            // DIAGNOSTIC: Log frame details on first search of page
+            await logPageStructureDiagnostics(target);
+        }
 
         // **UNIVERSAL IFRAME SEARCH**: Use the new universal function that works with ANY iframe
         // This discovers all iframes automatically and searches them with robust fallbacks
@@ -1307,16 +1350,21 @@ async function searchInAllFrames(target: string, action: 'click' | 'fill', fillV
                 })).catch(() => null);
                 
                 if (frameDetails) {
-                    log(`   📄 Frame content: ${frameDetails.allClickable} clickable elements (${frameDetails.buttonCount} buttons, ${frameDetails.divButtonCount} div-buttons, ${frameDetails.inputCount} inputs)`);
+                    // Get all child frames (includes cross-origin accessible frames)
+                    const allChildFrames = frame.childFrames();
+                    
+                    // Only log frame details if verbose logging enabled
+                    if (state.verboseLogging) {
+                        log(`   📄 Frame content: ${frameDetails.allClickable} clickable elements (${frameDetails.buttonCount} buttons, ${frameDetails.divButtonCount} div-buttons, ${frameDetails.inputCount} inputs)`);
+                        if (frameDetails.iframeCount > 0) {
+                            const iframeNamesList = frameDetails.iframeNames.map((f: any) => `[${f.name}${f.id !== 'no-id' ? `#${f.id}` : ''}]`).join(', ');
+                            log(`   🔗 This frame contains ${frameDetails.iframeCount} nested iframe(s): ${iframeNamesList}`);
+                            log(`   📍 Total child frames (Playwright detected): ${allChildFrames.length}`);
+                        }
+                    }
+                    
+                    // Search for clickable elements in each iframe using Playwright's frameLocator
                     if (frameDetails.iframeCount > 0) {
-                        const iframeNamesList = frameDetails.iframeNames.map((f: any) => `[${f.name}${f.id !== 'no-id' ? `#${f.id}` : ''}]`).join(', ');
-                        log(`   🔗 This frame contains ${frameDetails.iframeCount} nested iframe(s): ${iframeNamesList}`);
-                        
-                        // Get all child frames (includes cross-origin accessible frames)
-                        const allChildFrames = frame.childFrames();
-                        log(`   📍 Total child frames (Playwright detected): ${allChildFrames.length}`);
-                        
-                        // Search for clickable elements in each iframe using Playwright's frameLocator
                         for (let iIdx = 0; iIdx < frameDetails.iframeNames.length; iIdx++) {
                             const iframeInfo = frameDetails.iframeNames[iIdx];
                             const iframeLabel = `${iframeInfo.name}${iframeInfo.id !== 'no-id' ? `#${iframeInfo.id}` : ''}`;
@@ -1347,32 +1395,25 @@ async function searchInAllFrames(target: string, action: 'click' | 'fill', fillV
                                 const clickableLocator = iframeFrame.locator('button, [role="button"], [onclick], a[href], input[type="button"], input[type="submit"]');
                                 const clickableCount = await clickableLocator.count();
                                 
-                                if (clickableCount > 0) {
+                                if (clickableCount > 0 && state.verboseLogging) {
                                     const clickableElements = await clickableLocator.allTextContents();
                                     const cleanedElements = clickableElements
                                         .map((text: string) => text.trim())
                                         .filter((text: string) => text.length > 0 && text.length < 50)
                                         .slice(0, 30); // First 30 elements
                                     log(`      ├─ iframe [${iframeLabel}]: ${clickableCount} clickable elements → ${cleanedElements.join(' | ')}`);
-                                } else {
-                                    // Even if no clickable elements, try to get all text content from the iframe
-                                    const allText = await iframeFrame.locator('body').allTextContents().catch(() => []);
-                                    const bodyText = allText.join(' ').trim().slice(0, 100);
-                                    log(`      ├─ iframe [${iframeLabel}]: (0 clickable) | Content: "${bodyText}${bodyText.length === 100 ? '...' : ''}"`);
                                 }
                             } catch (err: any) {
                                 // For cross-origin iframes, try to access via Playwright's child frames
                                 try {
                                     const matchingFrame = allChildFrames[iIdx];
-                                    if (matchingFrame) {
+                                    if (matchingFrame && state.verboseLogging) {
                                         const crossOriginText = await matchingFrame.locator('body').allTextContents().catch(() => []);
                                         const bodyContent = crossOriginText.join(' ').trim().slice(0, 150);
                                         log(`      ├─ iframe [${iframeLabel}] (cross-origin): "${bodyContent}${bodyContent.length === 150 ? '...' : ''}"`);
-                                    } else {
-                                        log(`      ├─ iframe [${iframeLabel}]: (not accessible - cross-origin)`);
                                     }
                                 } catch (crossOriginErr: any) {
-                                    log(`      ├─ iframe [${iframeLabel}]: (not accessible - cross-origin)`);
+                                    // Silently skip cross-origin errors
                                 }
                             }
                         }
@@ -1503,6 +1544,12 @@ async function searchWindowsRecursively(
 ): Promise<boolean> {
     if (currentPage.isClosed()) return false;
     
+    // Skip deeply nested windows (depth > 5) - they rarely contain target elements
+    // This prevents exponential search overhead and log spam
+    if (depth > 5) {
+        return false;
+    }
+    
     try {
         const pageInfo = windowHierarchy.get(currentPage);
         const windowLabel = depth === 0 ? '🏠 MAIN WINDOW' : `📍 SUBWINDOW (Level ${depth})`;
@@ -1516,12 +1563,15 @@ async function searchWindowsRecursively(
         // Get frames in current window - ENSURE WE GET ALL
         const frames = currentPage.frames();
         
-        log(`\n🔍 [${'═'.repeat(50)}]`);
-        log(`🔍 [WINDOW SEARCH] ${windowLabel}`);
-        log(`🔍 ├─ TOTAL FRAMES TO SEARCH: ${frames.length}`);
-        log(`🔍 ├─ TARGET: "${target}"`);
-        log(`🔍 ├─ WINDOW DEPTH: ${depth}/${totalWindows - 1}`);
-        log(`🔍 └─ STATUS: Searching ALL frames thoroughly...\n`);
+        // Only log window search details if depth <= 1 (prevent log spam for deeply nested windows)
+        if (depth <= 1) {
+            log(`\n🔍 [${'═'.repeat(50)}]`);
+            log(`🔍 [WINDOW SEARCH] ${windowLabel}`);
+            log(`🔍 ├─ TOTAL FRAMES TO SEARCH: ${frames.length}`);
+            log(`🔍 ├─ TARGET: "${target}"`);
+            log(`🔍 ├─ WINDOW DEPTH: ${depth}/${totalWindows - 1}`);
+            log(`🔍 └─ STATUS: Searching ALL frames thoroughly...\n`);
+        }
         
         // If subwindow with no frames, try direct element search
         if (depth > 0 && frames.length === 0) {
@@ -1595,8 +1645,11 @@ async function searchWindowsRecursively(
         // Now recursively search child windows (sub-sub-windows)
         const childPages = pageInfo?.childPages || [];
         if (childPages.length > 0) {
-            log(`\n   🪟 ⬇️  Found ${childPages.length} nested subwindow(s) inside ${windowLabel}`);
-            log(`   🪟 Now searching these nested subwindows recursively...\n`);
+            // Only log nested windows if depth <= 2 (prevent log spam at deep nesting levels)
+            if (depth <= 2) {
+                log(`\n   🪟 ⬇️  Found ${childPages.length} nested subwindow(s) inside ${windowLabel}`);
+                log(`   🪟 Now searching these nested subwindows recursively...\n`);
+            }
             
             // Sort child pages by recency
             const childPagesSorted = childPages.sort((a, b) => {
@@ -1609,7 +1662,10 @@ async function searchWindowsRecursively(
                 const childPage = childPagesSorted[childIdx];
                 const childOpenTime = windowHierarchy.get(childPage)?.openedAt || Date.now();
                 
-                log(`\n   ⬇️  [Nested ${childIdx + 1}/${childPagesSorted.length}] Entering nested level ${depth + 1} (opened: ${new Date(childOpenTime).toLocaleTimeString()})...\n`);
+                // Only log entering nested if depth <= 2 (prevent spam)
+                if (depth <= 2) {
+                    log(`\n   ⬇️  [Nested ${childIdx + 1}/${childPagesSorted.length}] Entering nested level ${depth + 1} (opened: ${new Date(childOpenTime).toLocaleTimeString()})...\n`);
+                }
                 
                 const result = await searchWindowsRecursively(
                     childPage,
@@ -1622,11 +1678,17 @@ async function searchWindowsRecursively(
                 
                 if (result) return true;
                 
-                log(`\n   ⬆️  Returned from nested level ${depth + 1}, continuing...\n`);
+                // Only log returning if depth <= 2
+                if (depth <= 2) {
+                    log(`\n   ⬆️  Returned from nested level ${depth + 1}, continuing...\n`);
+                }
             }
         }
         
-        log(`\n🔍 [${'═'.repeat(50)}] ✓ Completed search for ${windowLabel}\n`);
+        // Only log completion if depth <= 2
+        if (depth <= 2) {
+            log(`\n🔍 [${'═'.repeat(50)}] ✓ Completed search for ${windowLabel}\n`);
+        }
         return false;
     } catch (error: any) {
         log(`❌ Error searching window at depth ${depth}: ${error.message}`);
@@ -1824,9 +1886,11 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                 'button, [role="button"], input[type="button"], input[type="submit"], a[href], [onclick], div[onclick], span[onclick], [style*="cursor:pointer"]'
             ).all();
             
-            log(`   [Frame search] Found ${clickableElements.length} clickable elements to check`);
-            
-            log(`   🔍 [PRIORITY CHECK 3] Checking ${clickableElements.length} clickable elements for: "${target}"`);
+            // Only log element count if verbose logging is enabled
+            if (state.verboseLogging) {
+                log(`   [Frame search] Found ${clickableElements.length} clickable elements to check`);
+                log(`   🔍 [PRIORITY CHECK 3] Checking ${clickableElements.length} clickable elements for: "${target}"`);
+            }
             
             for (let i = 0; i < clickableElements.length; i++) {
                 try {
@@ -2461,8 +2525,31 @@ async function executeFillInFrame(frame: any, target: string, fillValue: string,
             }, { searchText: target, fillVal: fillValue });
             
             if (filled) {
-                log(`✅ [DEEP FILL${framePath}] Filled: "${target}" = "${fillValue}" (NO visibility restrictions)`);
-                return true;
+                // VALIDATE: Check if fill actually persisted
+                await state.page.waitForTimeout(200);
+                const verifyFill = await frame.evaluate(({ searchText }) => {
+                    const inputs = Array.from(document.querySelectorAll('input, textarea'));
+                    for (const inp of inputs) {
+                        const placeholder = (inp as any).placeholder?.toLowerCase() || '';
+                        const ariaLabel = inp.getAttribute('aria-label')?.toLowerCase() || '';
+                        const name = (inp as any).name?.toLowerCase() || '';
+                        const id = (inp as any).id?.toLowerCase() || '';
+                        const allText = `${placeholder} ${ariaLabel} ${name} ${id}`;
+                        
+                        if (allText.includes(searchText.toLowerCase())) {
+                            return (inp as any).value;
+                        }
+                    }
+                    return null;
+                }, { searchText: target });
+                
+                if (verifyFill && verifyFill.toString().trim()) {
+                    log(`✅ [DEEP FILL${framePath}] Filled: "${target}" = "${fillValue}" (VERIFIED - Value confirmed in DOM)`);
+                    return true;
+                } else {
+                    log(`❌ [DEEP FILL${framePath}] FAILED VALIDATION: "${target}" - Value was set but NOT persisted (actual: "${verifyFill || 'empty'}")`);
+                    return false;
+                }
             }
         } catch (e: any) {
             log(`   ℹ️ Deep fill search in frame failed: ${e.message}`);
@@ -5261,12 +5348,14 @@ async function executeStep(stepData: any): Promise<StepResult> {
 
 async function pauseAutomation() {
     state.isPaused = true;
-    log('PAUSED');
+    state.pauseLoggedOnce = false; // Reset flag when pausing
+    log('⏸️  PAUSED - Waiting to resume...');
 }
 
 async function resumeAutomation() {
     state.isPaused = false;
-    log('RESUMED');
+    state.pauseLoggedOnce = false; // Reset flag
+    log('▶️  RESUMED - Continuing automation...');
 }
 
 async function stopAutomation() {
