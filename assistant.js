@@ -1339,9 +1339,14 @@ async function searchInAllSubwindows(target, action, fillValue) {
     try {
         log(`\n🪟 ========== [SEARCH STRATEGY: PRIORITY WINDOW FIRST] ==========`);
         log(`🪟 Total windows available: ${allPages.length}`);
-        // Log details of all open windows (always show, even if only 1)
-        for (let wIdx = 0; wIdx < allPages.length; wIdx++) {
-            const page = allPages[wIdx];
+        // Log only first 5 windows and latest to prevent spam with many windows
+        const windowsToLog = allPages.slice(0, 5);
+        if (allPages.length > 5) {
+            windowsToLog.push(latestSubwindow || allPages[allPages.length - 1]);
+        }
+        // Log details of windows (limited to prevent spam)
+        for (let wIdx = 0; wIdx < windowsToLog.length; wIdx++) {
+            const page = windowsToLog[wIdx];
             const isClosed = page.isClosed();
             const hierarchy = windowHierarchy.get(page);
             const level = hierarchy?.level || 0;
@@ -1359,6 +1364,9 @@ async function searchInAllSubwindows(target, action, fillValue) {
                 log(`   📍 WINDOW ${wIdx}: (error reading details - ${err.message})`);
             }
         }
+        if (allPages.length > 5) {
+            log(`   ... (${allPages.length - 5} more windows not shown to prevent spam)`);
+        }
         if (allPages.length <= 1)
             return false; // Only main page open
         // PRIORITY 1: Search latest opened subwindow FIRST if it exists
@@ -1371,7 +1379,7 @@ async function searchInAllSubwindows(target, action, fillValue) {
                 return true;
             }
         }
-        // PRIORITY 2: Search other subwindows by recency (newest first)
+        // PRIORITY 2: Search other subwindows by recency (newest first) - LIMIT TO LAST 3
         log(`\n🎯 [PRIORITY 2] Searching OTHER SUBWINDOWS by recency (newest first)`);
         const subwindowsSorted = allPages
             .filter(p => p !== state.page && !p.isClosed())
@@ -1379,7 +1387,13 @@ async function searchInAllSubwindows(target, action, fillValue) {
             const aTime = windowHierarchy.get(a)?.openedAt || 0;
             const bTime = windowHierarchy.get(b)?.openedAt || 0;
             return bTime - aTime; // Newest first
-        });
+        })
+            .slice(0, 3); // Only search 3 most recent subwindows to prevent spam
+        // Log how many windows we're skipping
+        const totalSubwindows = allPages.filter(p => p !== state.page && !p.isClosed()).length;
+        if (totalSubwindows > 3) {
+            log(`   ℹ️  Found ${totalSubwindows} subwindows total, searching only the 3 most recent...`);
+        }
         for (const subwindow of subwindowsSorted) {
             log(`\n   → Checking subwindow (opened at ${new Date(windowHierarchy.get(subwindow)?.openedAt || 0).toLocaleTimeString()})`);
             const result = await searchWindowsRecursively(subwindow, target, action, fillValue, windowHierarchy.get(subwindow)?.level || 1, allPages.length);
