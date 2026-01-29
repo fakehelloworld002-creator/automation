@@ -96,14 +96,16 @@ function log(message: string) {
 /**
  * Log step execution with bold formatting for easy identification
  */
-function logStep(stepId: string, action: string, target: string, windowInfo: string = '') {
+function logStep(stepId: string, action: string, target: string, data: string = '', windowInfo: string = '') {
     const separator = '═'.repeat(100);
-    const stepMessage = `STEP: ${stepId.toUpperCase()} | ACTION: ${action.toUpperCase()} | TARGET: "${target}"`;
-    const fullMessage = windowInfo ? `${stepMessage} | ${windowInfo}` : stepMessage;
+    const stepIdBold = `**${stepId.toUpperCase()}**`;
+    const dataDisplay = data ? ` | DATA: "${data}"` : '';
+    const locationBold = windowInfo ? ` | 📍 **${windowInfo}**` : '';
+    const stepMessage = `${stepIdBold} | ACTION: ${action.toUpperCase()} | TARGET: "${target}"${dataDisplay}${locationBold}`;
     
-    log(`\n${'█'.repeat(110)}`);
-    log(`█ ⚡ ${fullMessage}`);
-    log(`${'█'.repeat(110)}\n`);
+    log(`\n${'█'.repeat(120)}`);
+    log(`█ ⚡ ${stepMessage}`);
+    log(`${'█'.repeat(120)}\n`);
 }
 
 /**
@@ -781,11 +783,12 @@ async function deepDOMSearch(target: string, action: 'click' | 'fill', fillValue
                                 !input.disabled) {
                                 
                                 input.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                setTimeout(() => {
-                                    input.value = value;
-                                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                                }, 300);
+                                // FIXED: Do NOT use setTimeout - fill immediately and synchronously
+                                input.focus();
+                                input.value = value;
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                                input.dispatchEvent(new Event('change', { bubbles: true }));
+                                input.dispatchEvent(new Event('blur', { bubbles: true }));
                                 return true;
                             }
                         }
@@ -812,11 +815,12 @@ async function deepDOMSearch(target: string, action: 'click' | 'fill', fillValue
                             !(inp as any).disabled) {
                             
                             (inp as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            setTimeout(() => {
-                                (inp as any).value = value;
-                                (inp as any).dispatchEvent(new Event('input', { bubbles: true }));
-                                (inp as any).dispatchEvent(new Event('change', { bubbles: true }));
-                            }, 300);
+                            // FIXED: Do NOT use setTimeout - fill immediately and synchronously
+                            (inp as any).focus();
+                            (inp as any).value = value;
+                            (inp as any).dispatchEvent(new Event('input', { bubbles: true }));
+                            (inp as any).dispatchEvent(new Event('change', { bubbles: true }));
+                            (inp as any).dispatchEvent(new Event('blur', { bubbles: true }));
                             return true;
                         }
                     }
@@ -1105,7 +1109,44 @@ async function searchAllDiscoveredIframes(target: string, action: 'click' | 'fil
                 else if (action === 'fill' && fillValue) {
                     const inputs = await iframeLocator.locator('input[type="text"], textarea, input:not([type])').all();
                     
-                    log(`      🔍 Found ${inputs.length} input fields`);
+                    log(`      🔍 Found ${inputs.length} fillable input fields on visible screen`);
+                    
+                    // Log all visible fillable fields with their attributes
+                    const visibleInputs: any[] = [];
+                    for (const input of inputs) {
+                        try {
+                            const isVisible = await input.isVisible().catch(() => false);
+                            if (!isVisible) continue;
+
+                            const placeholder = await input.getAttribute('placeholder').catch(() => '');
+                            const title = await input.getAttribute('title').catch(() => '');
+                            const name = await input.getAttribute('name').catch(() => '');
+                            const id = await input.getAttribute('id').catch(() => '');
+                            const ariaLabel = await input.getAttribute('aria-label').catch(() => '');
+                            const value = await input.inputValue().catch(() => '');
+                            
+                            visibleInputs.push({
+                                placeholder, title, name, id, ariaLabel, value
+                            });
+                        } catch (e) {
+                            // Continue
+                        }
+                    }
+                    
+                    // Display all visible fillable fields
+                    if (visibleInputs.length > 0) {
+                        log(`      📋 VISIBLE FILLABLE FIELDS ON SCREEN:`);
+                        visibleInputs.forEach((inp, idx) => {
+                            const label = inp.title || inp.placeholder || inp.ariaLabel || inp.name || inp.id || `Field${idx + 1}`;
+                            const attrs = [];
+                            if (inp.placeholder) attrs.push(`placeholder="${inp.placeholder}"`);
+                            if (inp.name) attrs.push(`name="${inp.name}"`);
+                            if (inp.id) attrs.push(`id="${inp.id}"`);
+                            if (inp.ariaLabel) attrs.push(`aria-label="${inp.ariaLabel}"`);
+                            const attrStr = attrs.length > 0 ? ` [${attrs.join(' | ')}]` : '';
+                            log(`         ${idx + 1}. "${label}"${attrStr}`);
+                        });
+                    }
 
                     for (const input of inputs) {
                         try {
@@ -1140,7 +1181,7 @@ async function searchAllDiscoveredIframes(target: string, action: 'click' | 'fil
                             }
 
                             if (isMatch) {
-                                log(`      ✓ FOUND INPUT: "${title || placeholder || name}" - Filling with "${fillValue}"`);
+                                log(`      ✓ MATCH FOUND: "${title || placeholder || name}" - Filling with "${fillValue}"`);
 
                                 // Try Playwright fill first
                                 let filled = false;
@@ -2292,15 +2333,70 @@ async function executeFillInFrame(frame: any, target: string, fillValue: string,
     const targetLower = target.toLowerCase();
     
     try {
-        // PATTERN 0: ULTRA AGGRESSIVE DEEP FILL - NO VISIBILITY RESTRICTIONS
+        // Log all visible fillable fields on the current frame
+        try {
+            const visibleFields = await frame.evaluate(() => {
+                const inputs = document.querySelectorAll('input[type="text"], input:not([type="hidden"]):not([type="button"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]), textarea');
+                const fields: any[] = [];
+                
+                for (const input of Array.from(inputs)) {
+                    const el = input as HTMLInputElement | HTMLTextAreaElement;
+                    const style = window.getComputedStyle(el);
+                    
+                    // Only show visible fields
+                    if (style.display === 'none' || style.visibility === 'hidden') continue;
+                    
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0) {
+                        fields.push({
+                            placeholder: el.getAttribute('placeholder') || '',
+                            title: el.getAttribute('title') || '',
+                            name: el.getAttribute('name') || '',
+                            id: el.getAttribute('id') || '',
+                            ariaLabel: el.getAttribute('aria-label') || '',
+                            type: (el as HTMLInputElement).type || 'text',
+                            currentValue: el.value || ''
+                        });
+                    }
+                }
+                
+                return fields;
+            }).catch(() => []);
+            
+            if (visibleFields && visibleFields.length > 0) {
+                log(`   📋 VISIBLE FILLABLE FIELDS ON SCREEN${framePath}:`);
+                visibleFields.forEach((field, idx) => {
+                    const label = field.title || field.placeholder || field.ariaLabel || field.name || field.id || `Field${idx + 1}`;
+                    const attrs = [];
+                    if (field.placeholder) attrs.push(`placeholder="${field.placeholder}"`);
+                    if (field.name) attrs.push(`name="${field.name}"`);
+                    if (field.id) attrs.push(`id="${field.id}"`);
+                    if (field.ariaLabel) attrs.push(`aria-label="${field.ariaLabel}"`);
+                    const attrStr = attrs.length > 0 ? ` [${attrs.join(' | ')}]` : '';
+                    const value = field.currentValue ? ` = "${field.currentValue}"` : '';
+                    log(`      ${idx + 1}. "${label}"${attrStr}${value}`);
+                });
+            }
+        } catch (e) {
+            // Logging error, continue with fill
+        }
+        
+        // PATTERN 0: ULTRA AGGRESSIVE DEEP FILL - SKIP HIDDEN FIELDS, PRIORITIZE VISIBLE ONES
         try {
             const filled = await frame.evaluate(({ searchText, fillVal }) => {
                 const searchLower = searchText.toLowerCase();
                 const allInputs = document.querySelectorAll('input, textarea');
                 
-                // Direct walk through all inputs
+                // PASS 1: Try VISIBLE inputs first (skip hidden fields)
                 for (const inp of Array.from(allInputs)) {
                     const el = inp as HTMLInputElement | HTMLTextAreaElement;
+                    
+                    // SKIP hidden inputs (type="hidden" or hidden via CSS)
+                    if ((el as any).type === 'hidden') continue;
+                    
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden') continue;
+                    
                     const title = (el.getAttribute('title') || '').toLowerCase();
                     const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
                     const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
@@ -2309,11 +2405,11 @@ async function executeFillInFrame(frame: any, target: string, fillValue: string,
                     const label = (el.parentElement?.textContent || '').toLowerCase();
                     const parentLabel = (el.parentElement?.parentElement?.textContent || '').toLowerCase();
                     
-                    // Comprehensive search across all attributes and context - including parent labels
+                    // Comprehensive search across all attributes and context
                     const allText = `${title} ${placeholder} ${ariaLabel} ${name} ${id} ${label} ${parentLabel}`;
                     
                     if (allText.includes(searchLower)) {
-                        // DIRECT FILL - no visibility checks, no restrictions
+                        // DIRECT FILL - VISIBLE field matched!
                         try {
                             el.focus();
                             el.select();
@@ -2326,6 +2422,34 @@ async function executeFillInFrame(frame: any, target: string, fillValue: string,
                             el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
                             el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
                             
+                            return true;
+                        } catch (e) {
+                            // Try next
+                        }
+                    }
+                }
+                
+                // PASS 2: If no visible field found, try ALL inputs (including hidden as fallback)
+                for (const inp of Array.from(allInputs)) {
+                    const el = inp as HTMLInputElement | HTMLTextAreaElement;
+                    const title = (el.getAttribute('title') || '').toLowerCase();
+                    const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
+                    const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                    const name = (el.getAttribute('name') || '').toLowerCase();
+                    const id = (el.getAttribute('id') || '').toLowerCase();
+                    const label = (el.parentElement?.textContent || '').toLowerCase();
+                    const parentLabel = (el.parentElement?.parentElement?.textContent || '').toLowerCase();
+                    
+                    const allText = `${title} ${placeholder} ${ariaLabel} ${name} ${id} ${label} ${parentLabel}`;
+                    
+                    if (allText.includes(searchLower)) {
+                        try {
+                            el.focus();
+                            el.select();
+                            el.value = fillVal;
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                            el.dispatchEvent(new Event('blur', { bubbles: true }));
                             return true;
                         } catch (e) {
                             // Try next
@@ -4953,10 +5077,10 @@ async function executeStep(stepData: any): Promise<StepResult> {
         const windowInfo = windowHierarchy.get(state.page);
         const windowLevel = windowInfo?.level || 0;
         const storedTitle = windowInfo?.title || (await state.page.title().catch(() => 'Unknown'));
-        const windowLabel = isMainWindow ? `🏠 MAIN WINDOW` : `📍 SUBWINDOW (L${windowLevel}) "${storedTitle}"`;
+        const windowLabel = isMainWindow ? `MAIN WINDOW` : `SUBWINDOW (L${windowLevel}) "${storedTitle}"`;
 
-        // Log step with bold formatting
-        logStep(stepId, action, target, windowLabel);
+        // Log step with bold formatting (includes data being entered)
+        logStep(stepId, action, target, data, windowLabel);
         
         // Log environment summary
         await logWindowSummary();
@@ -5891,9 +6015,11 @@ const htmlUI = `
             }
         }
 
-        // Track if user is manually scrolling
+        // Track if user is manually scrolling and inactive timeout
         let isUserScrolling = false;
         let scrollTimeout;
+        let lastScrollActivity = 0;
+        const INACTIVITY_TIMEOUT = 30000; // 30 seconds in milliseconds
 
         function setupLogAutoScroll() {
             const logsDiv = document.getElementById('logs');
@@ -5901,22 +6027,26 @@ const htmlUI = `
             // Detect when user starts scrolling
             logsDiv.addEventListener('scroll', () => {
                 isUserScrolling = true;
+                lastScrollActivity = Date.now(); // Record when user last scrolled
                 clearTimeout(scrollTimeout);
                 
                 // Check if user scrolled to bottom
                 const isAtBottom = logsDiv.scrollHeight - logsDiv.clientHeight <= logsDiv.scrollTop + 5;
                 
-                // If they're at bottom or within 5px, resume auto-scroll
+                // If they're at bottom or within 5px, resume auto-scroll immediately
                 if (isAtBottom) {
                     isUserScrolling = false;
                 } else {
-                    // Stop auto-scroll for 3 seconds after user stops scrolling
+                    // Wait for 30 seconds of inactivity before resuming auto-scroll
                     scrollTimeout = setTimeout(() => {
-                        // Only resume if we're not actively running
-                        if (document.getElementById('statusValue').textContent !== 'Running') {
+                        // Only resume if:
+                        // 1. It's been 30 seconds since last scroll activity
+                        // 2. AND user isn't actively scrolling now
+                        const timeSinceScroll = Date.now() - lastScrollActivity;
+                        if (timeSinceScroll >= INACTIVITY_TIMEOUT) {
                             isUserScrolling = false;
                         }
-                    }, 3000);
+                    }, INACTIVITY_TIMEOUT);
                 }
             }, { passive: true });
         }
@@ -5925,10 +6055,11 @@ const htmlUI = `
             const logsDiv = document.getElementById('logs');
             logsDiv.innerHTML = logs.map(log => '<div class="log-entry">' + log + '</div>').join('');
             
-            // Auto-scroll to bottom only if:
-            // 1. User isn't manually scrolling
-            // 2. OR User scrolled to bottom and left the area
-            if (!isUserScrolling) {
+            // Auto-scroll to bottom only if user has been inactive for 30+ seconds
+            // OR if user scrolled back to the bottom
+            const timeSinceLastScroll = Date.now() - lastScrollActivity;
+            
+            if (!isUserScrolling || timeSinceLastScroll >= INACTIVITY_TIMEOUT) {
                 // Small delay to ensure DOM is updated
                 setTimeout(() => {
                     logsDiv.scrollTop = logsDiv.scrollHeight;
