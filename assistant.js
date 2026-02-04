@@ -4892,7 +4892,7 @@ function advancedElementSearch(target_1, action_1, fillValue_1) {
 }
 function clickWithRetry(target_1) {
     return __awaiter(this, arguments, void 0, function (target, maxRetries) {
-        var mainPageResult, advancedResult, foundInPriorityWindow, e_67, attempt, hiddenMenuItemHandled, retryClick, e_68, clickResult, changed, e0_1, initialUrl, initialTitle, found, newUrl, newTitle, signinErr_1, e1_5, e1b_1, scrollSuccess, buttonSelector, e2_7, shadowFound, e2_5_1, clickedInIframe, e3_2, success, e4_1, found, e5_1, error_11, subwindowResult, elementExists, diagErr_1;
+        var mainPageResult, advancedResult, foundInPriorityWindow, e_67, attempt, nestedMenuFound, directClickResult, e_68, clickResult, changed, e0_1, initialUrl, initialTitle, found, newUrl, newTitle, signinErr_1, e1_5, e1b_1, scrollSuccess, buttonSelector, e2_7, shadowFound, e2_5_1, clickedInIframe, e3_2, success, e4_1, found, e5_1, error_11, subwindowResult, elementExists, diagErr_1;
         var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4;
         if (maxRetries === void 0) { maxRetries = 5; }
         return __generator(this, function (_5) {
@@ -4964,147 +4964,135 @@ function clickWithRetry(target_1) {
                 case 14:
                     _5.trys.push([14, 20, , 21]);
                     return [4 /*yield*/, ((_a = state.page) === null || _a === void 0 ? void 0 : _a.evaluate(function (_a) {
-                            var _b, _c, _d, _e;
-                            var searchText = _a.search;
-                            var searchLower = searchText.toLowerCase().trim();
+                            var _b, _c;
+                            var targetText = _a.search;
+                            var searchLower = targetText.toLowerCase().trim();
                             var allElements = document.querySelectorAll('*');
-                            // Find the target element even if hidden
-                            var targetElement = null;
-                            var targetParentCount = 0;
-                            for (var _i = 0, _f = Array.from(allElements); _i < _f.length; _i++) {
-                                var el = _f[_i];
-                                var text = (el.textContent || '').trim().toLowerCase();
+                            // Find elements that match the target text
+                            var candidates = [];
+                            for (var _i = 0, _d = Array.from(allElements); _i < _d.length; _i++) {
+                                var el = _d[_i];
+                                // Get ONLY the direct text content of this element
                                 var directText = Array.from(el.childNodes)
-                                    .filter(function (n) { return n.nodeType === 3; })
+                                    .filter(function (n) { return n.nodeType === 3; }) // Text nodes only
                                     .map(function (n) { return (n.textContent || '').trim(); })
                                     .join(' ')
                                     .toLowerCase();
-                                // Prioritize direct text match
-                                if (directText === searchLower || text === searchLower) {
-                                    targetElement = el;
-                                    targetParentCount = 0;
-                                    break;
-                                }
-                                // Fallback to text containing
-                                if (!targetElement && (text.includes(searchLower) || directText.includes(searchLower))) {
-                                    targetElement = el;
-                                    targetParentCount++;
+                                // Also check element's own text if no children
+                                var elementText = el.children.length === 0
+                                    ? (el.textContent || '').trim().toLowerCase()
+                                    : directText;
+                                // Match exact or very close text
+                                if (elementText === searchLower ||
+                                    (directText && directText === searchLower) ||
+                                    (elementText.length > 0 && searchLower.includes(elementText.substring(0, Math.min(10, elementText.length))))) {
+                                    candidates.push(el);
                                 }
                             }
-                            if (!targetElement)
+                            if (candidates.length === 0)
                                 return false;
-                            // Check if target is hidden
-                            var targetStyle = window.getComputedStyle(targetElement);
-                            var isHidden = targetStyle.display === 'none' ||
-                                targetStyle.visibility === 'hidden' ||
-                                targetStyle.opacity === '0';
-                            if (!isHidden)
-                                return false; // Not hidden, let normal flow handle it
-                            // Target IS hidden - find and click parent menu trigger
-                            var parent = targetElement.parentElement;
-                            var depth = 0;
-                            var parentMenu = null;
-                            // Walk up to find the menu container (limit to 15 levels)
-                            while (parent && depth < 15) {
-                                var parentStyle = window.getComputedStyle(parent);
-                                // Check if parent is a menu/dropdown container
-                                var isMenu = parent.classList.toString().includes('menu') ||
-                                    parent.classList.toString().includes('dropdown') ||
-                                    parent.classList.toString().includes('nav') ||
-                                    parent.getAttribute('role') === 'menu' ||
-                                    parent.getAttribute('role') === 'listbox' ||
-                                    parent.getAttribute('role') === 'group';
-                                if (isMenu) {
-                                    parentMenu = parent;
-                                    break;
-                                }
-                                parent = parent.parentElement;
-                                depth++;
-                            }
-                            if (!parentMenu) {
-                                // If we didn't find a menu container, try clicking the target anyway
-                                try {
-                                    (_c = (_b = targetElement).click) === null || _c === void 0 ? void 0 : _c.call(_b);
-                                    return true;
-                                }
-                                catch (e) {
-                                    return false;
-                                }
-                            }
-                            // Found the menu container - now find its trigger button
-                            var trigger = null;
-                            // Strategy 1: Look for button/link that comes before menu in DOM (adjacent or nearby)
-                            var sibling = parentMenu.previousElementSibling;
-                            var checkCount = 0;
-                            while (sibling && !trigger && checkCount < 5) {
-                                if (sibling.tagName === 'BUTTON' ||
-                                    sibling.getAttribute('role') === 'button' ||
-                                    sibling.classList.toString().includes('trigger') ||
-                                    sibling.classList.toString().includes('toggle') ||
-                                    sibling.classList.toString().includes('btn')) {
-                                    trigger = sibling;
-                                }
-                                sibling = sibling.previousElementSibling;
-                                checkCount++;
-                            }
-                            // Strategy 2: Check parent element's button
-                            if (!trigger && parentMenu.parentElement) {
-                                var parentButtons = parentMenu.parentElement.querySelectorAll('button, [role="button"], a');
-                                if (parentButtons.length > 0) {
-                                    // Usually the first button is the trigger
-                                    trigger = parentButtons[0];
-                                }
-                            }
-                            // Strategy 3: Find the closest button/link that might be the trigger
-                            if (!trigger) {
-                                var allClickables = document.querySelectorAll('button, [role="button"], a');
-                                for (var i = 0; i < allClickables.length; i++) {
-                                    var el = allClickables[i];
-                                    var elementText = (el.textContent || '').toLowerCase();
-                                    // Check if this element's text is part of the menu's structure
-                                    if (elementText.includes('loan') || elementText.includes('loans') ||
-                                        elementText.includes('menu') || elementText.includes('dropdown')) {
-                                        trigger = el;
+                            // Check each candidate to see if it's hidden inside a menu
+                            for (var _e = 0, candidates_1 = candidates; _e < candidates_1.length; _e++) {
+                                var targetElement = candidates_1[_e];
+                                var style = window.getComputedStyle(targetElement);
+                                var isHidden = style.display === 'none' ||
+                                    style.visibility === 'hidden' ||
+                                    style.opacity === '0' ||
+                                    (style.width === '0px' && style.height === '0px');
+                                if (!isHidden)
+                                    continue; // Skip visible elements
+                                // This element is hidden - check if parent is a menu
+                                var parent_1 = targetElement.parentElement;
+                                var foundMenu = false;
+                                var menuTrigger = null;
+                                var depth = 0;
+                                while (parent_1 && depth < 12) {
+                                    var classList = parent_1.className || '';
+                                    var role = parent_1.getAttribute('role') || '';
+                                    var tag = parent_1.tagName.toLowerCase();
+                                    // Check if this parent is a menu structure
+                                    var isMenuStructure = classList.includes('dropdown') ||
+                                        classList.includes('menu') ||
+                                        classList.includes('nav') ||
+                                        role === 'menu' ||
+                                        role === 'listbox' ||
+                                        role === 'group' ||
+                                        role === 'menuitem';
+                                    if (isMenuStructure) {
+                                        foundMenu = true;
+                                        // Now find the trigger for this menu
+                                        // Look for adjacent button/link BEFORE this menu
+                                        var prev = parent_1.previousElementSibling;
+                                        var checkCount = 0;
+                                        while (prev && checkCount < 3) {
+                                            if (prev.tagName === 'BUTTON' ||
+                                                prev.tagName === 'A' ||
+                                                prev.getAttribute('role') === 'button') {
+                                                menuTrigger = prev;
+                                                break;
+                                            }
+                                            prev = prev.previousElementSibling;
+                                            checkCount++;
+                                        }
+                                        // If not found as sibling, check parent's first button child before the menu
+                                        if (!menuTrigger && parent_1.parentElement) {
+                                            var parentElement = parent_1.parentElement;
+                                            var children = Array.from(parentElement.children);
+                                            var menuIndex = children.indexOf(parent_1);
+                                            for (var i = menuIndex - 1; i >= 0; i--) {
+                                                var child = children[i];
+                                                if (child.tagName === 'BUTTON' ||
+                                                    child.getAttribute('role') === 'button' ||
+                                                    child.tagName === 'A') {
+                                                    menuTrigger = child;
+                                                    break;
+                                                }
+                                            }
+                                        }
                                         break;
                                     }
+                                    parent_1 = parent_1.parentElement;
+                                    depth++;
                                 }
-                            }
-                            if (trigger) {
-                                // Click the trigger to open the menu
-                                (_e = (_d = trigger).click) === null || _e === void 0 ? void 0 : _e.call(_d);
-                                return true; // Return true and let the retry logic handle clicking the target
+                                // If we found a hidden element in a menu, click the trigger
+                                if (foundMenu && menuTrigger) {
+                                    (_c = (_b = menuTrigger).click) === null || _c === void 0 ? void 0 : _c.call(_b);
+                                    return true;
+                                }
                             }
                             return false;
                         }, { search: target }))];
                 case 15:
-                    hiddenMenuItemHandled = _5.sent();
-                    if (!hiddenMenuItemHandled) return [3 /*break*/, 19];
-                    log("\u2705 [NESTED-MENU] Found hidden element in dropdown, opened parent menu");
-                    return [4 /*yield*/, ((_b = state.page) === null || _b === void 0 ? void 0 : _b.waitForTimeout(800))];
+                    nestedMenuFound = _5.sent();
+                    if (!nestedMenuFound) return [3 /*break*/, 19];
+                    log("\u2705 [NESTED-MENU] Detected hidden menu item, opening parent menu...");
+                    return [4 /*yield*/, ((_b = state.page) === null || _b === void 0 ? void 0 : _b.waitForTimeout(1000))];
                 case 16:
-                    _5.sent(); // Wait for menu animation
+                    _5.sent(); // Wait for menu to open
                     return [4 /*yield*/, ((_c = state.page) === null || _c === void 0 ? void 0 : _c.evaluate(function (_a) {
                             var _b, _c;
-                            var searchText = _a.search;
-                            var searchLower = searchText.toLowerCase().trim();
+                            var targetText = _a.search;
+                            var searchLower = targetText.toLowerCase().trim();
                             var allElements = document.querySelectorAll('*');
+                            // Find visible element matching target
                             for (var _i = 0, _d = Array.from(allElements); _i < _d.length; _i++) {
                                 var el = _d[_i];
                                 var text = (el.textContent || '').trim().toLowerCase();
-                                if (text === searchLower || text.includes(searchLower)) {
-                                    var style = window.getComputedStyle(el);
-                                    if (style.display !== 'none' && style.visibility !== 'hidden') {
-                                        (_c = (_b = el).click) === null || _c === void 0 ? void 0 : _c.call(_b);
-                                        return true;
-                                    }
+                                var style = window.getComputedStyle(el);
+                                // Check if visible and matches
+                                if (text === searchLower &&
+                                    style.display !== 'none' &&
+                                    style.visibility !== 'hidden') {
+                                    (_c = (_b = el).click) === null || _c === void 0 ? void 0 : _c.call(_b);
+                                    return true;
                                 }
                             }
                             return false;
                         }, { search: target }))];
                 case 17:
-                    retryClick = _5.sent();
-                    if (!retryClick) return [3 /*break*/, 19];
-                    log("\u2705 [NESTED-MENU] Successfully clicked hidden menu item after opening parent");
+                    directClickResult = _5.sent();
+                    if (!directClickResult) return [3 /*break*/, 19];
+                    log("\u2705 [NESTED-MENU] Successfully clicked menu item after opening parent");
                     return [4 /*yield*/, ((_d = state.page) === null || _d === void 0 ? void 0 : _d.waitForTimeout(500))];
                 case 18:
                     _5.sent();
@@ -5112,7 +5100,7 @@ function clickWithRetry(target_1) {
                 case 19: return [3 /*break*/, 21];
                 case 20:
                     e_68 = _5.sent();
-                    log("\u26A0\uFE0F  Nested menu handling failed, continuing...");
+                    log("\u26A0\uFE0F  Nested menu handling error: ".concat(e_68));
                     return [3 /*break*/, 21];
                 case 21:
                     _5.trys.push([21, 27, , 28]);
@@ -5751,13 +5739,13 @@ function handleDropdown(target, value) {
                                 if (!((_b = label.textContent) === null || _b === void 0 ? void 0 : _b.toLowerCase().includes(labelText.toLowerCase())))
                                     return "continue";
                                 // Look for nearby select or dropdown trigger
-                                var parent_1 = label.parentElement;
+                                var parent_2 = label.parentElement;
                                 var found = false;
                                 var _loop_15 = function (i) {
-                                    if (!parent_1)
+                                    if (!parent_2)
                                         return "break";
                                     // Check for native select
-                                    var select = parent_1.querySelector('select');
+                                    var select = parent_2.querySelector('select');
                                     if (select) {
                                         var options = select.querySelectorAll('option');
                                         for (var _f = 0, _g = Array.from(options); _f < _g.length; _f++) {
@@ -5771,7 +5759,7 @@ function handleDropdown(target, value) {
                                         }
                                     }
                                     // Check for custom dropdown
-                                    var dropdown = parent_1.querySelector('[role="listbox"], [role="combobox"]');
+                                    var dropdown = parent_2.querySelector('[role="listbox"], [role="combobox"]');
                                     if (dropdown) {
                                         var trigger = dropdown.querySelector('button') || dropdown;
                                         (_d = (_c = trigger).click) === null || _d === void 0 ? void 0 : _d.call(_c);
@@ -5790,7 +5778,7 @@ function handleDropdown(target, value) {
                                     }
                                     if (found)
                                         return "break";
-                                    parent_1 = parent_1.parentElement;
+                                    parent_2 = parent_2.parentElement;
                                 };
                                 for (var i = 0; i < 4; i++) {
                                     var state_13 = _loop_15(i);
@@ -6093,11 +6081,11 @@ function fillWithRetry(target_1, value_1) {
                                         return true;
                                     }
                                     // Check parent for input
-                                    var parent_2 = el.parentElement;
+                                    var parent_3 = el.parentElement;
                                     for (var i = 0; i < 5; i++) {
-                                        if (!parent_2)
+                                        if (!parent_3)
                                             break;
-                                        var parentInputs = parent_2.querySelectorAll('input, textarea');
+                                        var parentInputs = parent_3.querySelectorAll('input, textarea');
                                         if (parentInputs.length > 0) {
                                             var input = parentInputs[0];
                                             input.value = fillValue;
@@ -6105,7 +6093,7 @@ function fillWithRetry(target_1, value_1) {
                                             input.dispatchEvent(new Event('change', { bubbles: true }));
                                             return true;
                                         }
-                                        parent_2 = parent_2.parentElement;
+                                        parent_3 = parent_3.parentElement;
                                     }
                                 }
                             }
