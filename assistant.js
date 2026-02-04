@@ -4892,78 +4892,229 @@ function advancedElementSearch(target_1, action_1, fillValue_1) {
 }
 function clickWithRetry(target_1) {
     return __awaiter(this, arguments, void 0, function (target, maxRetries) {
-        var mainPageResult, advancedResult, foundInPriorityWindow, e_67, attempt, clickResult, changed, e0_1, initialUrl, initialTitle, found, newUrl, newTitle, signinErr_1, e1_5, e1b_1, scrollSuccess, buttonSelector, e2_7, shadowFound, e2_5_1, clickedInIframe, e3_2, success, e4_1, found, e5_1, error_11, subwindowResult, elementExists, diagErr_1;
-        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0;
+        var mainPageResult, advancedResult, foundInPriorityWindow, e_67, attempt, hiddenMenuItemHandled, retryClick, e_68, clickResult, changed, e0_1, initialUrl, initialTitle, found, newUrl, newTitle, signinErr_1, e1_5, e1b_1, scrollSuccess, buttonSelector, e2_7, shadowFound, e2_5_1, clickedInIframe, e3_2, success, e4_1, found, e5_1, error_11, subwindowResult, elementExists, diagErr_1;
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4;
         if (maxRetries === void 0) { maxRetries = 5; }
-        return __generator(this, function (_1) {
-            switch (_1.label) {
+        return __generator(this, function (_5) {
+            switch (_5.label) {
                 case 0: 
                 // FIRST: Ensure page is fully loaded before attempting to find elements
                 return [4 /*yield*/, waitForPageReady()];
                 case 1:
                     // FIRST: Ensure page is fully loaded before attempting to find elements
-                    _1.sent();
+                    _5.sent();
                     // Search all windows/frames/iframes with EQUAL PRIORITY
                     // No special priority for overlays - search everything uniformly
                     log("\n\uD83D\uDD0D Searching for: \"".concat(target, "\""));
                     return [4 /*yield*/, searchInAllFrames(target, 'click')];
                 case 2:
-                    mainPageResult = _1.sent();
+                    mainPageResult = _5.sent();
                     if (mainPageResult) {
                         return [2 /*return*/, true];
                     }
                     return [4 /*yield*/, advancedElementSearch(target, 'click', undefined, 2)];
                 case 3:
-                    advancedResult = _1.sent();
+                    advancedResult = _5.sent();
                     if (advancedResult) {
                         return [2 /*return*/, true];
                     }
                     if (!(allPages.length > 1 && latestSubwindow && !latestSubwindow.isClosed())) return [3 /*break*/, 7];
-                    _1.label = 4;
+                    _5.label = 4;
                 case 4:
-                    _1.trys.push([4, 6, , 7]);
+                    _5.trys.push([4, 6, , 7]);
                     return [4 /*yield*/, searchInAllSubwindows(target, 'click')];
                 case 5:
-                    foundInPriorityWindow = _1.sent();
+                    foundInPriorityWindow = _5.sent();
                     if (foundInPriorityWindow) {
                         log("\u2705 Successfully clicked in subwindow!");
                         return [2 /*return*/, true];
                     }
                     return [3 /*break*/, 7];
                 case 6:
-                    e_67 = _1.sent();
+                    e_67 = _5.sent();
                     log("Subwindow search failed, continuing...");
                     return [3 /*break*/, 7];
                 case 7:
                     attempt = 1;
-                    _1.label = 8;
+                    _5.label = 8;
                 case 8:
-                    if (!(attempt <= maxRetries)) return [3 /*break*/, 77];
+                    if (!(attempt <= maxRetries)) return [3 /*break*/, 84];
                     if (!state.isPaused) return [3 /*break*/, 12];
-                    _1.label = 9;
+                    _5.label = 9;
                 case 9:
                     if (!(state.isPaused && !state.isStopped)) return [3 /*break*/, 11];
                     return [4 /*yield*/, new Promise(function (resolve) { return setTimeout(resolve, 500); })];
                 case 10:
-                    _1.sent();
+                    _5.sent();
                     return [3 /*break*/, 9];
                 case 11:
                     if (state.isStopped)
                         return [2 /*return*/, false];
-                    _1.label = 12;
+                    _5.label = 12;
                 case 12:
-                    _1.trys.push([12, 73, , 76]);
+                    _5.trys.push([12, 80, , 83]);
                     if (!(!state.page || state.page.isClosed())) return [3 /*break*/, 14];
                     return [4 /*yield*/, switchToLatestPage()];
                 case 13:
-                    _1.sent();
+                    _5.sent();
                     if (!state.page || state.page.isClosed()) {
                         return [2 /*return*/, false];
                     }
-                    _1.label = 14;
+                    _5.label = 14;
                 case 14:
-                    _1.trys.push([14, 20, , 21]);
+                    _5.trys.push([14, 20, , 21]);
                     return [4 /*yield*/, ((_a = state.page) === null || _a === void 0 ? void 0 : _a.evaluate(function (searchText) {
+                            var _a, _b, _c, _d;
+                            var searchLower = searchText.toLowerCase().trim();
+                            var allElements = document.querySelectorAll('*');
+                            // Find the target element even if hidden
+                            var targetElement = null;
+                            var targetParentCount = 0;
+                            for (var _i = 0, _e = Array.from(allElements); _i < _e.length; _i++) {
+                                var el = _e[_i];
+                                var text = (el.textContent || '').trim().toLowerCase();
+                                var directText = Array.from(el.childNodes)
+                                    .filter(function (n) { return n.nodeType === 3; })
+                                    .map(function (n) { return (n.textContent || '').trim(); })
+                                    .join(' ')
+                                    .toLowerCase();
+                                // Prioritize direct text match
+                                if (directText === searchLower || text === searchLower) {
+                                    targetElement = el;
+                                    targetParentCount = 0;
+                                    break;
+                                }
+                                // Fallback to text containing
+                                if (!targetElement && (text.includes(searchLower) || directText.includes(searchLower))) {
+                                    targetElement = el;
+                                    targetParentCount++;
+                                }
+                            }
+                            if (!targetElement)
+                                return false;
+                            // Check if target is hidden
+                            var targetStyle = window.getComputedStyle(targetElement);
+                            var isHidden = targetStyle.display === 'none' ||
+                                targetStyle.visibility === 'hidden' ||
+                                targetStyle.opacity === '0';
+                            if (!isHidden)
+                                return false; // Not hidden, let normal flow handle it
+                            // Target IS hidden - find and click parent menu trigger
+                            var parent = targetElement.parentElement;
+                            var depth = 0;
+                            var parentMenu = null;
+                            // Walk up to find the menu container (limit to 15 levels)
+                            while (parent && depth < 15) {
+                                var parentStyle = window.getComputedStyle(parent);
+                                // Check if parent is a menu/dropdown container
+                                var isMenu = parent.classList.toString().includes('menu') ||
+                                    parent.classList.toString().includes('dropdown') ||
+                                    parent.classList.toString().includes('nav') ||
+                                    parent.getAttribute('role') === 'menu' ||
+                                    parent.getAttribute('role') === 'listbox' ||
+                                    parent.getAttribute('role') === 'group';
+                                if (isMenu) {
+                                    parentMenu = parent;
+                                    break;
+                                }
+                                parent = parent.parentElement;
+                                depth++;
+                            }
+                            if (!parentMenu) {
+                                // If we didn't find a menu container, try clicking the target anyway
+                                try {
+                                    (_b = (_a = targetElement).click) === null || _b === void 0 ? void 0 : _b.call(_a);
+                                    return true;
+                                }
+                                catch (e) {
+                                    return false;
+                                }
+                            }
+                            // Found the menu container - now find its trigger button
+                            var trigger = null;
+                            // Strategy 1: Look for button/link that comes before menu in DOM (adjacent or nearby)
+                            var sibling = parentMenu.previousElementSibling;
+                            var checkCount = 0;
+                            while (sibling && !trigger && checkCount < 5) {
+                                if (sibling.tagName === 'BUTTON' ||
+                                    sibling.getAttribute('role') === 'button' ||
+                                    sibling.classList.toString().includes('trigger') ||
+                                    sibling.classList.toString().includes('toggle') ||
+                                    sibling.classList.toString().includes('btn')) {
+                                    trigger = sibling;
+                                }
+                                sibling = sibling.previousElementSibling;
+                                checkCount++;
+                            }
+                            // Strategy 2: Check parent element's button
+                            if (!trigger && parentMenu.parentElement) {
+                                var parentButtons = parentMenu.parentElement.querySelectorAll('button, [role="button"], a');
+                                if (parentButtons.length > 0) {
+                                    // Usually the first button is the trigger
+                                    trigger = parentButtons[0];
+                                }
+                            }
+                            // Strategy 3: Find the closest button/link that might be the trigger
+                            if (!trigger) {
+                                var allClickables = document.querySelectorAll('button, [role="button"], a');
+                                for (var i = 0; i < allClickables.length; i++) {
+                                    var el = allClickables[i];
+                                    var elementText = (el.textContent || '').toLowerCase();
+                                    // Check if this element's text is part of the menu's structure
+                                    if (elementText.includes('loan') || elementText.includes('loans') ||
+                                        elementText.includes('menu') || elementText.includes('dropdown')) {
+                                        trigger = el;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (trigger) {
+                                // Click the trigger to open the menu
+                                (_d = (_c = trigger).click) === null || _d === void 0 ? void 0 : _d.call(_c);
+                                return true; // Return true and let the retry logic handle clicking the target
+                            }
+                            return false;
+                        }, searchText))];
+                case 15:
+                    hiddenMenuItemHandled = _5.sent();
+                    if (!hiddenMenuItemHandled) return [3 /*break*/, 19];
+                    log("\u2705 [NESTED-MENU] Found hidden element in dropdown, opened parent menu");
+                    return [4 /*yield*/, ((_b = state.page) === null || _b === void 0 ? void 0 : _b.waitForTimeout(800))];
+                case 16:
+                    _5.sent(); // Wait for menu animation
+                    return [4 /*yield*/, ((_c = state.page) === null || _c === void 0 ? void 0 : _c.evaluate(function (searchText) {
+                            var _a, _b;
+                            var searchLower = searchText.toLowerCase().trim();
+                            var allElements = document.querySelectorAll('*');
+                            for (var _i = 0, _c = Array.from(allElements); _i < _c.length; _i++) {
+                                var el = _c[_i];
+                                var text = (el.textContent || '').trim().toLowerCase();
+                                if (text === searchLower || text.includes(searchLower)) {
+                                    var style = window.getComputedStyle(el);
+                                    if (style.display !== 'none' && style.visibility !== 'hidden') {
+                                        (_b = (_a = el).click) === null || _b === void 0 ? void 0 : _b.call(_a);
+                                        return true;
+                                    }
+                                }
+                            }
+                            return false;
+                        }, searchText))];
+                case 17:
+                    retryClick = _5.sent();
+                    if (!retryClick) return [3 /*break*/, 19];
+                    log("\u2705 [NESTED-MENU] Successfully clicked hidden menu item after opening parent");
+                    return [4 /*yield*/, ((_d = state.page) === null || _d === void 0 ? void 0 : _d.waitForTimeout(500))];
+                case 18:
+                    _5.sent();
+                    return [2 /*return*/, true];
+                case 19: return [3 /*break*/, 21];
+                case 20:
+                    e_68 = _5.sent();
+                    log("\u26A0\uFE0F  Nested menu handling failed, continuing...");
+                    return [3 /*break*/, 21];
+                case 21:
+                    _5.trys.push([21, 27, , 28]);
+                    return [4 /*yield*/, ((_e = state.page) === null || _e === void 0 ? void 0 : _e.evaluate(function (searchText) {
                             // THREE-PASS STRATEGY for SHORT TEXT targeting (like "P", "O", etc.):
                             // PASS 1: STRICT - Only exact match on BUTTON's direct visible text
                             var searchLower = searchText.toLowerCase().trim();
@@ -5068,16 +5219,16 @@ function clickWithRetry(target_1) {
                             }
                             return false;
                         }, target))];
-                case 15:
-                    clickResult = _1.sent();
-                    if (!clickResult) return [3 /*break*/, 19];
+                case 22:
+                    clickResult = _5.sent();
+                    if (!clickResult) return [3 /*break*/, 26];
                     log("\u2705 [STRATEGY-0] Element found and clicked: \"".concat(target, "\" | Waiting for action effect..."));
-                    return [4 /*yield*/, ((_b = state.page) === null || _b === void 0 ? void 0 : _b.waitForTimeout(500))];
-                case 16:
-                    _1.sent();
+                    return [4 /*yield*/, ((_f = state.page) === null || _f === void 0 ? void 0 : _f.waitForTimeout(500))];
+                case 23:
+                    _5.sent();
                     return [4 /*yield*/, verifyActionTookEffect('click', 2000)];
-                case 17:
-                    changed = _1.sent();
+                case 24:
+                    changed = _5.sent();
                     if (changed) {
                         log("\u2705 [STRATEGY-0-VERIFIED] Action confirmed - DOM changed after click");
                     }
@@ -5086,25 +5237,25 @@ function clickWithRetry(target_1) {
                     }
                     // Detect any newly opened nested windows from this click
                     return [4 /*yield*/, detectNewNestedWindows(state.page).catch(function () { })];
-                case 18:
+                case 25:
                     // Detect any newly opened nested windows from this click
-                    _1.sent();
+                    _5.sent();
                     return [2 /*return*/, true];
-                case 19: return [3 /*break*/, 21];
-                case 20:
-                    e0_1 = _1.sent();
-                    return [3 /*break*/, 21];
-                case 21:
-                    if (!(target.toLowerCase().includes('sign') && target.toLowerCase().includes('in'))) return [3 /*break*/, 31];
-                    _1.label = 22;
-                case 22:
-                    _1.trys.push([22, 30, , 31]);
+                case 26: return [3 /*break*/, 28];
+                case 27:
+                    e0_1 = _5.sent();
+                    return [3 /*break*/, 28];
+                case 28:
+                    if (!(target.toLowerCase().includes('sign') && target.toLowerCase().includes('in'))) return [3 /*break*/, 38];
+                    _5.label = 29;
+                case 29:
+                    _5.trys.push([29, 37, , 38]);
                     log("[SIGNIN-PRIORITY] Special handling for Sign In button...");
-                    initialUrl = (_c = state.page) === null || _c === void 0 ? void 0 : _c.url();
-                    return [4 /*yield*/, ((_d = state.page) === null || _d === void 0 ? void 0 : _d.title())];
-                case 23:
-                    initialTitle = _1.sent();
-                    return [4 /*yield*/, ((_e = state.page) === null || _e === void 0 ? void 0 : _e.evaluate(function (searchText) {
+                    initialUrl = (_g = state.page) === null || _g === void 0 ? void 0 : _g.url();
+                    return [4 /*yield*/, ((_h = state.page) === null || _h === void 0 ? void 0 : _h.title())];
+                case 30:
+                    initialTitle = _5.sent();
+                    return [4 /*yield*/, ((_j = state.page) === null || _j === void 0 ? void 0 : _j.evaluate(function (searchText) {
                             var searchLower = searchText.toLowerCase();
                             var allElements = document.querySelectorAll('a, button, [role="button"]');
                             // Look for sign in with flexible matching
@@ -5134,17 +5285,17 @@ function clickWithRetry(target_1) {
                             }
                             return { found: false };
                         }, target))];
-                case 24:
-                    found = _1.sent();
-                    if (!(found && found.found)) return [3 /*break*/, 28];
+                case 31:
+                    found = _5.sent();
+                    if (!(found && found.found)) return [3 /*break*/, 35];
                     log("\u2705 [SIGNIN-PRIORITY] Clicked element: text=\"".concat(found.text, "\" href=\"").concat(found.href, "\""));
-                    return [4 /*yield*/, ((_f = state.page) === null || _f === void 0 ? void 0 : _f.waitForTimeout(2000))];
-                case 25:
-                    _1.sent();
-                    newUrl = (_g = state.page) === null || _g === void 0 ? void 0 : _g.url();
-                    return [4 /*yield*/, ((_h = state.page) === null || _h === void 0 ? void 0 : _h.title())];
-                case 26:
-                    newTitle = _1.sent();
+                    return [4 /*yield*/, ((_k = state.page) === null || _k === void 0 ? void 0 : _k.waitForTimeout(2000))];
+                case 32:
+                    _5.sent();
+                    newUrl = (_l = state.page) === null || _l === void 0 ? void 0 : _l.url();
+                    return [4 /*yield*/, ((_m = state.page) === null || _m === void 0 ? void 0 : _m.title())];
+                case 33:
+                    newTitle = _5.sent();
                     if (newUrl !== initialUrl) {
                         log("\u2705 [SIGNIN-VERIFIED] Navigation confirmed! URL changed from \"".concat(initialUrl, "\" to \"").concat(newUrl, "\""));
                     }
@@ -5152,85 +5303,85 @@ function clickWithRetry(target_1) {
                         log("\u26A0\uFE0F  [SIGNIN-WARNING] Click executed but page did not navigate. Still on: ".concat(initialUrl));
                     }
                     return [4 /*yield*/, detectNewNestedWindows(state.page).catch(function () { })];
-                case 27:
-                    _1.sent();
-                    return [2 /*return*/, true];
-                case 28:
-                    log("\u274C [SIGNIN-FAILED] Could not find visible Sign In button on page");
-                    _1.label = 29;
-                case 29: return [3 /*break*/, 31];
-                case 30:
-                    signinErr_1 = _1.sent();
-                    log("   \u2139\uFE0F [SIGNIN-PRIORITY] Failed: ".concat(signinErr_1));
-                    return [3 /*break*/, 31];
-                case 31:
-                    _1.trys.push([31, 34, , 41]);
-                    log("[STRATEGY-1] Attempting direct selector: \"".concat(target, "\""));
-                    return [4 /*yield*/, ((_j = state.page) === null || _j === void 0 ? void 0 : _j.click(target, { timeout: 1500 }))];
-                case 32:
-                    _1.sent();
-                    log("\u2705 [STRATEGY-1] Direct selector click succeeded");
-                    return [4 /*yield*/, ((_k = state.page) === null || _k === void 0 ? void 0 : _k.waitForTimeout(300))];
-                case 33:
-                    _1.sent();
-                    return [2 /*return*/, true];
                 case 34:
-                    e1_5 = _1.sent();
-                    _1.label = 35;
+                    _5.sent();
+                    return [2 /*return*/, true];
                 case 35:
-                    _1.trys.push([35, 39, , 40]);
+                    log("\u274C [SIGNIN-FAILED] Could not find visible Sign In button on page");
+                    _5.label = 36;
+                case 36: return [3 /*break*/, 38];
+                case 37:
+                    signinErr_1 = _5.sent();
+                    log("   \u2139\uFE0F [SIGNIN-PRIORITY] Failed: ".concat(signinErr_1));
+                    return [3 /*break*/, 38];
+                case 38:
+                    _5.trys.push([38, 41, , 48]);
+                    log("[STRATEGY-1] Attempting direct selector: \"".concat(target, "\""));
+                    return [4 /*yield*/, ((_o = state.page) === null || _o === void 0 ? void 0 : _o.click(target, { timeout: 1500 }))];
+                case 39:
+                    _5.sent();
+                    log("\u2705 [STRATEGY-1] Direct selector click succeeded");
+                    return [4 /*yield*/, ((_p = state.page) === null || _p === void 0 ? void 0 : _p.waitForTimeout(300))];
+                case 40:
+                    _5.sent();
+                    return [2 /*return*/, true];
+                case 41:
+                    e1_5 = _5.sent();
+                    _5.label = 42;
+                case 42:
+                    _5.trys.push([42, 46, , 47]);
                     log("[STRATEGY-1B] Trying with scroll...");
                     return [4 /*yield*/, scrollToElement(target)];
-                case 36:
-                    _1.sent();
-                    return [4 /*yield*/, ((_l = state.page) === null || _l === void 0 ? void 0 : _l.click(target, { timeout: 3000 }))];
-                case 37:
-                    _1.sent();
+                case 43:
+                    _5.sent();
+                    return [4 /*yield*/, ((_q = state.page) === null || _q === void 0 ? void 0 : _q.click(target, { timeout: 3000 }))];
+                case 44:
+                    _5.sent();
                     log("\u2705 [STRATEGY-1B] Scroll + click succeeded");
-                    return [4 /*yield*/, ((_m = state.page) === null || _m === void 0 ? void 0 : _m.waitForTimeout(300))];
-                case 38:
-                    _1.sent();
+                    return [4 /*yield*/, ((_r = state.page) === null || _r === void 0 ? void 0 : _r.waitForTimeout(300))];
+                case 45:
+                    _5.sent();
                     return [2 /*return*/, true];
-                case 39:
-                    e1b_1 = _1.sent();
+                case 46:
+                    e1b_1 = _5.sent();
                     // Direct selector failed
                     log("   \u2139\uFE0F Direct selector failed: ".concat(e1b_1));
-                    return [3 /*break*/, 40];
-                case 40: return [3 /*break*/, 41];
-                case 41:
-                    _1.trys.push([41, 48, , 49]);
+                    return [3 /*break*/, 47];
+                case 47: return [3 /*break*/, 48];
+                case 48:
+                    _5.trys.push([48, 55, , 56]);
                     log("[STRATEGY-2] Searching for text: \"".concat(target, "\""));
                     return [4 /*yield*/, scrollToElementByText(target)];
-                case 42:
-                    scrollSuccess = _1.sent();
-                    if (!scrollSuccess) return [3 /*break*/, 47];
+                case 49:
+                    scrollSuccess = _5.sent();
+                    if (!scrollSuccess) return [3 /*break*/, 54];
                     return [4 /*yield*/, findButtonByText(target)];
-                case 43:
-                    buttonSelector = _1.sent();
-                    if (!buttonSelector) return [3 /*break*/, 47];
+                case 50:
+                    buttonSelector = _5.sent();
+                    if (!buttonSelector) return [3 /*break*/, 54];
                     log("\u2705 [STRATEGY-2] Found button: ".concat(buttonSelector));
-                    return [4 /*yield*/, ((_o = state.page) === null || _o === void 0 ? void 0 : _o.click(buttonSelector, { timeout: 3000 }))];
-                case 44:
-                    _1.sent();
+                    return [4 /*yield*/, ((_s = state.page) === null || _s === void 0 ? void 0 : _s.click(buttonSelector, { timeout: 3000 }))];
+                case 51:
+                    _5.sent();
                     log("\u2705 [STRATEGY-2] Clicked by text matching");
-                    return [4 /*yield*/, ((_p = state.page) === null || _p === void 0 ? void 0 : _p.waitForTimeout(300))];
-                case 45:
-                    _1.sent();
+                    return [4 /*yield*/, ((_t = state.page) === null || _t === void 0 ? void 0 : _t.waitForTimeout(300))];
+                case 52:
+                    _5.sent();
                     // Detect any newly opened nested windows from this click
                     return [4 /*yield*/, detectNewNestedWindows(state.page).catch(function () { })];
-                case 46:
+                case 53:
                     // Detect any newly opened nested windows from this click
-                    _1.sent();
+                    _5.sent();
                     return [2 /*return*/, true];
-                case 47: return [3 /*break*/, 49];
-                case 48:
-                    e2_7 = _1.sent();
+                case 54: return [3 /*break*/, 56];
+                case 55:
+                    e2_7 = _5.sent();
                     log("   \u2139\uFE0F [STRATEGY-2] Text matching failed: ".concat(e2_7));
-                    return [3 /*break*/, 49];
-                case 49:
-                    _1.trys.push([49, 53, , 54]);
+                    return [3 /*break*/, 56];
+                case 56:
+                    _5.trys.push([56, 60, , 61]);
                     log("Searching through Shadow DOM and nested elements...");
-                    return [4 /*yield*/, ((_q = state.page) === null || _q === void 0 ? void 0 : _q.evaluate(function (searchText) {
+                    return [4 /*yield*/, ((_u = state.page) === null || _u === void 0 ? void 0 : _u.evaluate(function (searchText) {
                             // Walk through all elements including shadow DOM
                             var walk = function (node) {
                                 var _a;
@@ -5269,23 +5420,23 @@ function clickWithRetry(target_1) {
                             };
                             return walk(document);
                         }, target))];
-                case 50:
-                    shadowFound = _1.sent();
-                    if (!shadowFound) return [3 /*break*/, 52];
+                case 57:
+                    shadowFound = _5.sent();
+                    if (!shadowFound) return [3 /*break*/, 59];
                     log("Clicked element in shadow DOM");
-                    return [4 /*yield*/, ((_r = state.page) === null || _r === void 0 ? void 0 : _r.waitForTimeout(300))];
-                case 51:
-                    _1.sent();
+                    return [4 /*yield*/, ((_v = state.page) === null || _v === void 0 ? void 0 : _v.waitForTimeout(300))];
+                case 58:
+                    _5.sent();
                     return [2 /*return*/, true];
-                case 52: return [3 /*break*/, 54];
-                case 53:
-                    e2_5_1 = _1.sent();
+                case 59: return [3 /*break*/, 61];
+                case 60:
+                    e2_5_1 = _5.sent();
                     log("Shadow DOM search failed");
-                    return [3 /*break*/, 54];
-                case 54:
-                    _1.trys.push([54, 58, , 59]);
+                    return [3 /*break*/, 61];
+                case 61:
+                    _5.trys.push([61, 65, , 66]);
                     log("Searching in iframes for: ".concat(target, "..."));
-                    return [4 /*yield*/, ((_s = state.page) === null || _s === void 0 ? void 0 : _s.evaluate(function (searchText) {
+                    return [4 /*yield*/, ((_w = state.page) === null || _w === void 0 ? void 0 : _w.evaluate(function (searchText) {
                             var _a;
                             var iframes = document.querySelectorAll('iframe');
                             for (var _i = 0, _b = Array.from(iframes); _i < _b.length; _i++) {
@@ -5329,25 +5480,25 @@ function clickWithRetry(target_1) {
                             }
                             return false;
                         }, target))];
-                case 55:
-                    clickedInIframe = _1.sent();
-                    if (!clickedInIframe) return [3 /*break*/, 57];
+                case 62:
+                    clickedInIframe = _5.sent();
+                    if (!clickedInIframe) return [3 /*break*/, 64];
                     log("Clicked element in iframe");
-                    return [4 /*yield*/, ((_t = state.page) === null || _t === void 0 ? void 0 : _t.waitForTimeout(300))];
-                case 56:
-                    _1.sent();
+                    return [4 /*yield*/, ((_x = state.page) === null || _x === void 0 ? void 0 : _x.waitForTimeout(300))];
+                case 63:
+                    _5.sent();
                     return [2 /*return*/, true];
-                case 57: return [3 /*break*/, 59];
-                case 58:
-                    e3_2 = _1.sent();
+                case 64: return [3 /*break*/, 66];
+                case 65:
+                    e3_2 = _5.sent();
                     log("Iframe click failed");
-                    return [3 /*break*/, 59];
-                case 59:
-                    _1.trys.push([59, 64, , 65]);
+                    return [3 /*break*/, 66];
+                case 66:
+                    _5.trys.push([66, 71, , 72]);
                     return [4 /*yield*/, scrollToElementByText(target)];
-                case 60:
-                    _1.sent();
-                    return [4 /*yield*/, ((_u = state.page) === null || _u === void 0 ? void 0 : _u.evaluate(function (sel) {
+                case 67:
+                    _5.sent();
+                    return [4 /*yield*/, ((_y = state.page) === null || _y === void 0 ? void 0 : _y.evaluate(function (sel) {
                             var element = document.querySelector(sel);
                             if (element) {
                                 element.click();
@@ -5355,21 +5506,21 @@ function clickWithRetry(target_1) {
                             }
                             return false;
                         }, target))];
-                case 61:
-                    success = _1.sent();
-                    if (!success) return [3 /*break*/, 63];
-                    return [4 /*yield*/, ((_v = state.page) === null || _v === void 0 ? void 0 : _v.waitForTimeout(300))];
-                case 62:
-                    _1.sent();
+                case 68:
+                    success = _5.sent();
+                    if (!success) return [3 /*break*/, 70];
+                    return [4 /*yield*/, ((_z = state.page) === null || _z === void 0 ? void 0 : _z.waitForTimeout(300))];
+                case 69:
+                    _5.sent();
                     return [2 /*return*/, true];
-                case 63: return [3 /*break*/, 65];
-                case 64:
-                    e4_1 = _1.sent();
-                    return [3 /*break*/, 65];
-                case 65:
-                    _1.trys.push([65, 69, , 70]);
+                case 70: return [3 /*break*/, 72];
+                case 71:
+                    e4_1 = _5.sent();
+                    return [3 /*break*/, 72];
+                case 72:
+                    _5.trys.push([72, 76, , 77]);
                     log("Deep searching all clickable elements...");
-                    return [4 /*yield*/, ((_w = state.page) === null || _w === void 0 ? void 0 : _w.evaluate(function (searchText) {
+                    return [4 /*yield*/, ((_0 = state.page) === null || _0 === void 0 ? void 0 : _0.evaluate(function (searchText) {
                             // Scroll to top first
                             window.scrollTo(0, 0);
                             // Deep search all possible elements
@@ -5388,54 +5539,54 @@ function clickWithRetry(target_1) {
                             }
                             return false;
                         }, target))];
-                case 66:
-                    found = _1.sent();
-                    if (!found) return [3 /*break*/, 68];
-                    log("Deep search click succeeded");
-                    return [4 /*yield*/, ((_x = state.page) === null || _x === void 0 ? void 0 : _x.waitForTimeout(300))];
-                case 67:
-                    _1.sent();
-                    return [2 /*return*/, true];
-                case 68: return [3 /*break*/, 70];
-                case 69:
-                    e5_1 = _1.sent();
-                    log("Deep search failed");
-                    return [3 /*break*/, 70];
-                case 70:
-                    if (!(attempt < maxRetries)) return [3 /*break*/, 72];
-                    return [4 /*yield*/, ((_y = state.page) === null || _y === void 0 ? void 0 : _y.waitForTimeout(500))];
-                case 71:
-                    _1.sent(); // Reduced wait between retries
-                    _1.label = 72;
-                case 72: return [3 /*break*/, 76];
                 case 73:
-                    error_11 = _1.sent();
-                    if (!(attempt < maxRetries)) return [3 /*break*/, 75];
-                    return [4 /*yield*/, ((_z = state.page) === null || _z === void 0 ? void 0 : _z.waitForTimeout(500))];
+                    found = _5.sent();
+                    if (!found) return [3 /*break*/, 75];
+                    log("Deep search click succeeded");
+                    return [4 /*yield*/, ((_1 = state.page) === null || _1 === void 0 ? void 0 : _1.waitForTimeout(300))];
                 case 74:
-                    _1.sent(); // Reduced wait between retries
-                    _1.label = 75;
-                case 75: return [3 /*break*/, 76];
+                    _5.sent();
+                    return [2 /*return*/, true];
+                case 75: return [3 /*break*/, 77];
                 case 76:
+                    e5_1 = _5.sent();
+                    log("Deep search failed");
+                    return [3 /*break*/, 77];
+                case 77:
+                    if (!(attempt < maxRetries)) return [3 /*break*/, 79];
+                    return [4 /*yield*/, ((_2 = state.page) === null || _2 === void 0 ? void 0 : _2.waitForTimeout(500))];
+                case 78:
+                    _5.sent(); // Reduced wait between retries
+                    _5.label = 79;
+                case 79: return [3 /*break*/, 83];
+                case 80:
+                    error_11 = _5.sent();
+                    if (!(attempt < maxRetries)) return [3 /*break*/, 82];
+                    return [4 /*yield*/, ((_3 = state.page) === null || _3 === void 0 ? void 0 : _3.waitForTimeout(500))];
+                case 81:
+                    _5.sent(); // Reduced wait between retries
+                    _5.label = 82;
+                case 82: return [3 /*break*/, 83];
+                case 83:
                     attempt++;
                     return [3 /*break*/, 8];
-                case 77:
-                    if (!(allPages.length > 1)) return [3 /*break*/, 79];
+                case 84:
+                    if (!(allPages.length > 1)) return [3 /*break*/, 86];
                     log("\uD83E\uDE9F Trying subwindow search as final fallback...");
                     return [4 /*yield*/, searchInAllSubwindows(target, 'click')];
-                case 78:
-                    subwindowResult = _1.sent();
+                case 85:
+                    subwindowResult = _5.sent();
                     if (subwindowResult) {
                         return [2 /*return*/, true];
                     }
-                    _1.label = 79;
-                case 79:
+                    _5.label = 86;
+                case 86:
                     // CLICK FAILED - Provide diagnostic information
                     log("\n\u274C [CLICK FAILED] Unable to find or click element: \"".concat(target, "\""));
-                    _1.label = 80;
-                case 80:
-                    _1.trys.push([80, 82, , 83]);
-                    return [4 /*yield*/, ((_0 = state.page) === null || _0 === void 0 ? void 0 : _0.evaluate(function (searchText) {
+                    _5.label = 87;
+                case 87:
+                    _5.trys.push([87, 89, , 90]);
+                    return [4 /*yield*/, ((_4 = state.page) === null || _4 === void 0 ? void 0 : _4.evaluate(function (searchText) {
                             var lower = searchText.toLowerCase();
                             var allElements = document.querySelectorAll('*');
                             for (var _i = 0, _a = Array.from(allElements); _i < _a.length; _i++) {
@@ -5454,8 +5605,8 @@ function clickWithRetry(target_1) {
                             }
                             return { found: false, text: '', visible: false, tagName: '', className: '' };
                         }, target))];
-                case 81:
-                    elementExists = _1.sent();
+                case 88:
+                    elementExists = _5.sent();
                     if (elementExists === null || elementExists === void 0 ? void 0 : elementExists.found) {
                         if (!elementExists.visible) {
                             log("   \u26A0\uFE0F  Element FOUND but HIDDEN (".concat(elementExists.tagName, ".").concat(elementExists.className, ") | Text: \"").concat(elementExists.text, "\""));
@@ -5469,12 +5620,12 @@ function clickWithRetry(target_1) {
                         log("   \u26A0\uFE0F  Element NOT FOUND on page at all");
                         log("   \u2192 Search for similar text:  \"".concat(target, "\""));
                     }
-                    return [3 /*break*/, 83];
-                case 82:
-                    diagErr_1 = _1.sent();
+                    return [3 /*break*/, 90];
+                case 89:
+                    diagErr_1 = _5.sent();
                     log("   \u2139\uFE0F  Diagnostic check failed: ".concat(diagErr_1));
-                    return [3 /*break*/, 83];
-                case 83: return [2 /*return*/, false];
+                    return [3 /*break*/, 90];
+                case 90: return [2 /*return*/, false];
             }
         });
     });
@@ -5484,7 +5635,7 @@ function clickWithRetry(target_1) {
  */
 function handleDropdown(target, value) {
     return __awaiter(this, void 0, void 0, function () {
-        var selectHandled, e_68, customDropdownHandled, e_69, adjacentHandled, e_70;
+        var selectHandled, e_69, customDropdownHandled, e_70, adjacentHandled, e_71;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
@@ -5528,7 +5679,7 @@ function handleDropdown(target, value) {
                     return [2 /*return*/, true];
                 case 4: return [3 /*break*/, 6];
                 case 5:
-                    e_68 = _a.sent();
+                    e_69 = _a.sent();
                     log("\u26A0\uFE0F  Native select handling failed");
                     return [3 /*break*/, 6];
                 case 6:
@@ -5584,7 +5735,7 @@ function handleDropdown(target, value) {
                     return [2 /*return*/, true];
                 case 9: return [3 /*break*/, 11];
                 case 10:
-                    e_69 = _a.sent();
+                    e_70 = _a.sent();
                     log("\u26A0\uFE0F  Custom dropdown handling failed");
                     return [3 /*break*/, 11];
                 case 11:
@@ -5665,7 +5816,7 @@ function handleDropdown(target, value) {
                     return [2 /*return*/, true];
                 case 14: return [3 /*break*/, 16];
                 case 15:
-                    e_70 = _a.sent();
+                    e_71 = _a.sent();
                     log("\u26A0\uFE0F  Label-adjacent dropdown handling failed");
                     return [3 /*break*/, 16];
                 case 16: return [2 /*return*/, false];
@@ -5678,7 +5829,7 @@ function handleDropdown(target, value) {
  */
 function detectAndHandleDropdown(target, value) {
     return __awaiter(this, void 0, void 0, function () {
-        var isDropdown, e_71;
+        var isDropdown, e_72;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
@@ -5725,7 +5876,7 @@ function detectAndHandleDropdown(target, value) {
                 case 3: return [2 /*return*/, _a.sent()];
                 case 4: return [3 /*break*/, 6];
                 case 5:
-                    e_71 = _a.sent();
+                    e_72 = _a.sent();
                     return [3 /*break*/, 6];
                 case 6: return [2 /*return*/, false];
             }
@@ -5734,7 +5885,7 @@ function detectAndHandleDropdown(target, value) {
 }
 function fillWithRetry(target_1, value_1) {
     return __awaiter(this, arguments, void 0, function (target, value, maxRetries) {
-        var dropdownHandled, mainPageResult, advancedResult, foundInPriorityWindow, e_72, attempt, e0_2, filled, e0_3, filledInIframe, e5_2, foundAndFilled, e1_6, e2_8, e3_3, shadowFilled, e4_2, error_12, foundInSubwindow, swError_1, fieldExists, diagErr_2;
+        var dropdownHandled, mainPageResult, advancedResult, foundInPriorityWindow, e_73, attempt, e0_2, filled, e0_3, filledInIframe, e5_2, foundAndFilled, e1_6, e2_8, e3_3, shadowFilled, e4_2, error_12, foundInSubwindow, swError_1, fieldExists, diagErr_2;
         var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p;
         if (maxRetries === void 0) { maxRetries = 5; }
         return __generator(this, function (_q) {
@@ -5782,7 +5933,7 @@ function fillWithRetry(target_1, value_1) {
                     }
                     return [3 /*break*/, 8];
                 case 7:
-                    e_72 = _q.sent();
+                    e_73 = _q.sent();
                     log("Subwindow search failed, continuing...");
                     return [3 /*break*/, 8];
                 case 8:
@@ -6146,7 +6297,7 @@ function fillWithRetry(target_1, value_1) {
 }
 function getAllPageElements() {
     return __awaiter(this, void 0, void 0, function () {
-        var elements, e_73;
+        var elements, e_74;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
@@ -6873,8 +7024,8 @@ function getAllPageElements() {
                     log("Found ".concat(elements.length, " page elements (iframe: ").concat(elements.filter(function (e) { return e.location === 'iframe'; }).length, ", overlay: ").concat(elements.filter(function (e) { var _a; return (_a = e.location) === null || _a === void 0 ? void 0 : _a.includes('overlay'); }).length, ", shadow-dom: ").concat(elements.filter(function (e) { return e.location === 'shadow-dom'; }).length, ")"));
                     return [2 /*return*/, elements];
                 case 3:
-                    e_73 = _a.sent();
-                    log("Failed to get elements: ".concat(e_73.message || e_73));
+                    e_74 = _a.sent();
+                    log("Failed to get elements: ".concat(e_74.message || e_74));
                     return [2 /*return*/, []];
                 case 4: return [2 /*return*/];
             }
@@ -6888,7 +7039,7 @@ function getAllPageElements() {
  */
 function waitForPageReady() {
     return __awaiter(this, arguments, void 0, function (timeout) {
-        var startTime, lastActivityTime, e_74, frames_4, _i, frames_3, frame, e_75, e_76, loadingIndicators, e_77, e_78, pendingRequests, settledCount, requestCount, e_79, e_80, e_81, isStable, e_82, totalWaitTime, error_13;
+        var startTime, lastActivityTime, e_75, frames_4, _i, frames_3, frame, e_76, e_77, loadingIndicators, e_78, e_79, pendingRequests, settledCount, requestCount, e_80, e_81, e_82, isStable, e_83, totalWaitTime, error_13;
         if (timeout === void 0) { timeout = 30000; }
         return __generator(this, function (_a) {
             switch (_a.label) {
@@ -6918,7 +7069,7 @@ function waitForPageReady() {
                     _a.sent();
                     return [3 /*break*/, 8];
                 case 7:
-                    e_74 = _a.sent();
+                    e_75 = _a.sent();
                     return [3 /*break*/, 8];
                 case 8:
                     _a.trys.push([8, 15, , 16]);
@@ -6936,14 +7087,14 @@ function waitForPageReady() {
                     _a.sent();
                     return [3 /*break*/, 13];
                 case 12:
-                    e_75 = _a.sent();
+                    e_76 = _a.sent();
                     return [3 /*break*/, 13];
                 case 13:
                     _i++;
                     return [3 /*break*/, 9];
                 case 14: return [3 /*break*/, 16];
                 case 15:
-                    e_76 = _a.sent();
+                    e_77 = _a.sent();
                     return [3 /*break*/, 16];
                 case 16:
                     _a.trys.push([16, 20, , 21]);
@@ -6989,7 +7140,7 @@ function waitForPageReady() {
                     _a.label = 19;
                 case 19: return [3 /*break*/, 21];
                 case 20:
-                    e_77 = _a.sent();
+                    e_78 = _a.sent();
                     return [3 /*break*/, 21];
                 case 21:
                     _a.trys.push([21, 23, , 24]);
@@ -7008,7 +7159,7 @@ function waitForPageReady() {
                     _a.sent();
                     return [3 /*break*/, 24];
                 case 23:
-                    e_78 = _a.sent();
+                    e_79 = _a.sent();
                     return [3 /*break*/, 24];
                 case 24:
                     _a.trys.push([24, 37, , 38]);
@@ -7047,13 +7198,13 @@ function waitForPageReady() {
                     _a.label = 33;
                 case 33: return [3 /*break*/, 35];
                 case 34:
-                    e_79 = _a.sent();
+                    e_80 = _a.sent();
                     pendingRequests = false;
                     return [3 /*break*/, 35];
                 case 35: return [3 /*break*/, 25];
                 case 36: return [3 /*break*/, 38];
                 case 37:
-                    e_80 = _a.sent();
+                    e_81 = _a.sent();
                     return [3 /*break*/, 38];
                 case 38:
                     _a.trys.push([38, 40, , 41]);
@@ -7090,7 +7241,7 @@ function waitForPageReady() {
                     _a.sent();
                     return [3 /*break*/, 41];
                 case 40:
-                    e_81 = _a.sent();
+                    e_82 = _a.sent();
                     return [3 /*break*/, 41];
                 case 41:
                     _a.trys.push([41, 43, , 44]);
@@ -7103,7 +7254,7 @@ function waitForPageReady() {
                     isStable = _a.sent();
                     return [3 /*break*/, 44];
                 case 43:
-                    e_82 = _a.sent();
+                    e_83 = _a.sent();
                     return [3 /*break*/, 44];
                 case 44:
                     totalWaitTime = Date.now() - startTime;
@@ -7154,7 +7305,7 @@ function executeWithPageReady(actionFn, stepName) {
 /* ============== STEP EXECUTION WITH SELF-HEALING ============== */
 function executeStep(stepData) {
     return __awaiter(this, void 0, void 0, function () {
-        var stepId, action, target, data, result, isMainWindow, windowInfo, windowLevel, storedTitle, _a, windowLabel, frameCount, i, e_83, success, isMainWindow_1, windowInfo_1, windowLevel_1, storedTitle_1, _b, windowLabel_1, success, isMainWindow_2, windowInfo_2, windowLevel_2, storedTitle_2, _c, windowLabel_2, isMainWindow_3, windowInfo_3, windowLevel_3, storedTitle_3, _d, windowLabel_3, e_84, waitTime, content, found, path_1, error_15, _e, _f, e_85;
+        var stepId, action, target, data, result, isMainWindow, windowInfo, windowLevel, storedTitle, _a, windowLabel, frameCount, i, e_84, success, isMainWindow_1, windowInfo_1, windowLevel_1, storedTitle_1, _b, windowLabel_1, success, isMainWindow_2, windowInfo_2, windowLevel_2, storedTitle_2, _c, windowLabel_2, isMainWindow_3, windowInfo_3, windowLevel_3, storedTitle_3, _d, windowLabel_3, e_85, waitTime, content, found, path_1, error_15, _e, _f, e_86;
         var _this = this;
         return __generator(this, function (_g) {
             switch (_g.label) {
@@ -7279,9 +7430,9 @@ function executeStep(stepData) {
                     result.actualOutput = "Opened: ".concat(target);
                     return [3 /*break*/, 25];
                 case 22:
-                    e_83 = _g.sent();
+                    e_84 = _g.sent();
                     if (i === 3)
-                        throw e_83;
+                        throw e_84;
                     return [4 /*yield*/, new Promise(function (resolve) { return setTimeout(resolve, 2000); })];
                 case 23:
                     _g.sent();
@@ -7401,9 +7552,9 @@ function executeStep(stepData) {
                     result.actualOutput = "Selected: ".concat(data, " | ").concat(windowLabel_3);
                     return [3 /*break*/, 50];
                 case 49:
-                    e_84 = _g.sent();
+                    e_85 = _g.sent();
                     result.status = 'FAIL';
-                    result.remarks = e_84.message;
+                    result.remarks = e_85.message;
                     result.actualOutput = "Failed to select";
                     return [3 /*break*/, 50];
                 case 50: return [3 /*break*/, 58];
@@ -7462,7 +7613,7 @@ function executeStep(stepData) {
                     _f.pageSource = _g.sent();
                     return [3 /*break*/, 65];
                 case 64:
-                    e_85 = _g.sent();
+                    e_86 = _g.sent();
                     log("Capture failed");
                     return [3 /*break*/, 65];
                 case 65: return [2 /*return*/, result];
@@ -7491,7 +7642,7 @@ function resumeAutomation() {
 }
 function stopAutomation() {
     return __awaiter(this, void 0, void 0, function () {
-        var e_86;
+        var e_87;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
@@ -7509,8 +7660,8 @@ function stopAutomation() {
                     log('Browser closed by STOP button');
                     return [3 /*break*/, 4];
                 case 3:
-                    e_86 = _a.sent();
-                    log("Error closing: ".concat(e_86));
+                    e_87 = _a.sent();
+                    log("Error closing: ".concat(e_87));
                     return [3 /*break*/, 4];
                 case 4: return [2 /*return*/];
             }
@@ -7783,7 +7934,7 @@ function runAutomation(excelFilePath) {
 var PORT = 3000;
 var htmlUI = "\n<!DOCTYPE html>\n<html>\n<head>\n    <title>Test Automation Assistant</title>\n    <style>\n        * { margin: 0; padding: 0; box-sizing: border-box; }\n        body {\n            font-family: 'Segoe UI', Arial, sans-serif;\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            min-height: 100vh;\n            display: flex;\n            align-items: center;\n            justify-content: center;\n            padding: 20px;\n        }\n        .container {\n            background: white;\n            border-radius: 12px;\n            box-shadow: 0 20px 60px rgba(0,0,0,0.3);\n            max-width: 600px;\n            width: 100%;\n            padding: 40px;\n        }\n        h1 { color: #333; margin-bottom: 10px; text-align: center; }\n        .subtitle { color: #666; text-align: center; margin-bottom: 30px; font-size: 14px; }\n        .file-input-wrapper {\n            position: relative;\n            margin-bottom: 30px;\n            z-index: 1;\n        }\n        .file-input { display: none; }\n        .file-input-label {\n            display: block;\n            padding: 15px;\n            background: #f0f0f0;\n            border: 2px dashed #667eea;\n            border-radius: 8px;\n            text-align: center;\n            cursor: pointer;\n            transition: all 0.3s;\n            color: #667eea;\n            font-weight: 500;\n            position: relative;\n            z-index: 1;\n            pointer-events: auto;\n        }\n        .file-input-label:hover { background: #e8e8ff; border-color: #764ba2; }\n        .file-name { color: #333; margin-top: 10px; font-size: 14px; font-weight: 500; }\n        .controls {\n            display: grid;\n            grid-template-columns: 1fr 1fr;\n            gap: 12px;\n            margin-bottom: 20px;\n            position: relative;\n            z-index: 10;\n        }\n        .controls-full { grid-column: 1 / -1; }\n        button {\n            padding: 12px 20px;\n            border: none;\n            border-radius: 8px;\n            font-size: 14px;\n            font-weight: 600;\n            cursor: pointer;\n            transition: all 0.3s;\n            text-transform: uppercase;\n            letter-spacing: 0.5px;\n            position: relative;\n            z-index: 100;\n        }\n        .btn-primary {\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            color: white;\n            grid-column: 1 / -1;\n            z-index: 100;\n        }\n        .btn-primary:hover:not(:disabled) {\n            transform: translateY(-2px);\n            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);\n        }\n        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }\n        .btn-secondary { background: #f0f0f0; color: #333; }\n        .btn-secondary:hover:not(:disabled) { background: #e0e0e0; }\n        .btn-pause { background: #ff9800; color: white; }\n        .btn-pause:hover:not(:disabled) { background: #f57c00; }\n        .btn-stop { background: #f44336; color: white; }\n        .btn-stop:hover:not(:disabled) { background: #d32f2f; }\n        .btn-elements { background: #2196f3; color: white; }\n        .btn-elements:hover:not(:disabled) { background: #1976d2; }\n        .status {\n            background: #f5f5f5;\n            border-left: 4px solid #667eea;\n            padding: 15px;\n            border-radius: 4px;\n            margin-bottom: 20px;\n            display: none;\n        }\n        .status-text { color: #666; font-size: 14px; margin: 5px 0; }\n        .status-text strong { color: #333; }\n        .logs {\n            background: #f5f5f5;\n            border: 1px solid #ddd;\n            border-radius: 8px;\n            padding: 15px;\n            max-height: 200px;\n            overflow-y: auto;\n            font-family: monospace;\n            font-size: 12px;\n            color: #333;\n        }\n        .log-entry { margin: 4px 0; color: #666; }\n        .elements-modal {\n            display: none;\n            position: fixed;\n            top: 0;\n            left: 0;\n            width: 100%;\n            height: 100%;\n            background: rgba(0,0,0,0.5);\n            z-index: 1000;\n            align-items: center;\n            justify-content: center;\n            overflow: auto;\n        }\n        .elements-modal.active { display: flex; }\n        .elements-content {\n            background: white;\n            border-radius: 8px;\n            padding: 0;\n            max-width: 500px;\n            width: 95%;\n            max-height: 70vh;\n            overflow: hidden;\n            box-shadow: 0 10px 40px rgba(0,0,0,0.3);\n            display: flex;\n            flex-direction: column;\n            border: 1px solid #ddd;\n        }\n        .elements-header {\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            color: white;\n            padding: 16px 20px;\n            border-bottom: 1px solid #ddd;\n            display: flex;\n            align-items: center;\n            justify-content: space-between;\n            flex-shrink: 0;\n        }\n        .elements-header h2 {\n            color: white;\n            margin: 0;\n            font-size: 16px;\n            font-weight: 600;\n            display: flex;\n            align-items: center;\n            gap: 8px;\n        }\n        .elements-count {\n            background: rgba(255,255,255,0.3);\n            color: white;\n            padding: 4px 10px;\n            border-radius: 12px;\n            font-size: 12px;\n            font-weight: 600;\n        }\n        .elements-list-container {\n            flex: 1;\n            overflow-y: auto;\n            padding: 15px;\n        }\n        .element-item {\n            background: #f9f9f9;\n            border-left: 4px solid #667eea;\n            padding: 12px;\n            margin-bottom: 10px;\n            border-radius: 4px;\n            font-size: 13px;\n        }\n        .element-type {\n            display: inline-block;\n            background: #667eea;\n            color: white;\n            padding: 2px 8px;\n            border-radius: 3px;\n            font-size: 11px;\n            font-weight: 600;\n            margin-right: 8px;\n        }\n        .element-name { font-weight: 600; color: #333; }\n        .close-modal {\n            background: #f44336;\n            color: white;\n            border: none;\n            padding: 8px 18px;\n            border-radius: 4px;\n            cursor: pointer;\n            font-weight: 600;\n            font-size: 12px;\n            transition: all 0.2s;\n        }\n        .close-modal:hover {\n            background: #d32f2f;\n        }\n    </style>\n</head>\n<body>\n    <div class=\"container\">\n        <h1>Test Automation Assistant</h1>\n        <p class=\"subtitle\">Self-Healing Intelligent Automation</p>\n\n        <div class=\"file-input-wrapper\">\n            <input type=\"file\" id=\"excelFile\" class=\"file-input\" accept=\".xlsx,.xls\">\n            <label for=\"excelFile\" class=\"file-input-label\">Click or drag Excel file here</label>\n            <div id=\"fileName\" class=\"file-name\"></div>\n        </div>\n\n        <div id=\"status\" class=\"status\">\n            <div class=\"status-text\"><strong>Status:</strong> <span id=\"statusValue\">Idle</span></div>\n            <div class=\"status-text\"><strong>Step:</strong> <span id=\"currentStep\">-</span></div>\n            <div class=\"status-text\"><strong>Progress:</strong> <span id=\"progress\">0%</span></div>\n        </div>\n\n        <div class=\"controls\">\n            <button id=\"startBtn\" class=\"btn-primary\" onclick=\"startAutomation()\">START</button>\n            <button id=\"pauseBtn\" class=\"btn-secondary btn-pause\" onclick=\"pauseAutomation()\" disabled>PAUSE</button>\n            <button id=\"resumeBtn\" class=\"btn-secondary\" onclick=\"resumeAutomation()\" style=\"display:none; background: #4caf50; color: white;\">RESUME</button>\n            <button id=\"stopBtn\" class=\"btn-secondary btn-stop\" onclick=\"stopAutomation()\" disabled>STOP</button>\n            <button id=\"elementsBtn\" class=\"btn-secondary btn-elements\" onclick=\"showElements()\" disabled>Show Elements</button>\n            <button id=\"closeBrowserBtn\" class=\"btn-secondary\" onclick=\"closeBrowser()\" style=\"display:none; background: #f44336; color: white;\" title=\"Close browser after automation completes\">CLOSE BROWSER</button>\n        </div>\n\n        <div id=\"logs\" class=\"logs\"></div>\n    </div>\n\n    <div id=\"elementsModal\" class=\"elements-modal\">\n        <div class=\"elements-content\">\n            <div class=\"elements-header\">\n                <h2>\uD83C\uDFAF Current Page Elements</h2>\n                <span class=\"elements-count\" id=\"elementsCount\">0</span>\n            </div>\n            <div class=\"elements-list-container\">\n                <div id=\"elementsList\"></div>\n            </div>\n            <div style=\"padding: 12px 15px; border-top: 1px solid #ddd; text-align: right;\">\n                <button class=\"close-modal\" onclick=\"closeElements()\">Close</button>\n            </div>\n        </div>\n    </div>\n\n    <script>\n        let selectedFile = null;\n\n        // Initialize auto-scroll behavior when page loads\n        if (document.readyState === 'loading') {\n            document.addEventListener('DOMContentLoaded', setupLogAutoScroll);\n        } else {\n            setupLogAutoScroll();\n        }\n\n        document.getElementById('excelFile').addEventListener('change', (e) => {\n            selectedFile = e.target.files[0];\n            document.getElementById('fileName').textContent = selectedFile ? 'Selected: ' + selectedFile.name : '';\n        });\n\n        async function startAutomation() {\n            if (!selectedFile) {\n                alert('Select Excel file first');\n                return;\n            }\n\n            try {\n                const response = await fetch('/start', {\n                    method: 'POST',\n                    headers: { 'Content-Type': 'application/json' },\n                    body: JSON.stringify({ filename: selectedFile.name })\n                });\n                const data = await response.json();\n                if (data.success) {\n                    document.getElementById('startBtn').disabled = true;\n                    document.getElementById('pauseBtn').disabled = false;\n                    document.getElementById('stopBtn').disabled = false;\n                    document.getElementById('elementsBtn').disabled = false;\n                    document.getElementById('status').style.display = 'block';\n                    updateProgress();\n                }\n            } catch (error) {\n                alert('Error: ' + error.message);\n            }\n        }\n\n        async function pauseAutomation() {\n            await fetch('/pause', { method: 'POST' });\n            document.getElementById('pauseBtn').style.display = 'none';\n            document.getElementById('resumeBtn').style.display = 'block';\n            document.getElementById('statusValue').textContent = 'Paused';\n        }\n\n        async function resumeAutomation() {\n            await fetch('/resume', { method: 'POST' });\n            document.getElementById('resumeBtn').style.display = 'none';\n            document.getElementById('pauseBtn').style.display = 'block';\n            document.getElementById('statusValue').textContent = 'Running';\n        }\n\n        async function stopAutomation() {\n            if (confirm('Stop automation?')) {\n                await fetch('/stop', { method: 'POST' });\n                resetUI();\n            }\n        }\n\n        async function closeBrowser() {\n            if (confirm('Close the browser? You can still inspect the screenshots and logs.')) {\n                try {\n                    const response = await fetch('/close-browser', { method: 'POST' });\n                    const data = await response.json();\n                    if (data.success) {\n                        document.getElementById('closeBrowserBtn').style.display = 'none';\n                        document.getElementById('statusValue').textContent = 'Browser Closed';\n                        alert('Browser closed successfully. Results saved in RESULTS folder.');\n                    } else {\n                        alert('Error: ' + (data.error || 'Could not close browser'));\n                    }\n                } catch (error) {\n                    alert('Error closing browser: ' + error.message);\n                }\n            }\n        }\n\n        async function showElements() {\n            try {\n                // Pause automation first\n                const pauseResponse = await fetch('/pause', { method: 'POST' });\n                await pauseResponse.json();\n                \n                // Give pause time to take effect\n                await new Promise(resolve => setTimeout(resolve, 300));\n                \n                document.getElementById('pauseBtn').style.display = 'none';\n                document.getElementById('resumeBtn').style.display = 'block';\n                document.getElementById('statusValue').textContent = 'Paused';\n                \n                // Get elements from current page\n                const response = await fetch('/elements');\n                const data = await response.json();\n                displayElements(data.elements);\n                document.getElementById('elementsModal').classList.add('active');\n            } catch (error) {\n                alert('Error: ' + error.message);\n            }\n        }\n\n        function displayElements(elements) {\n            const list = document.getElementById('elementsList');\n            const countSpan = document.getElementById('elementsCount');\n            list.innerHTML = '';\n\n            if (!elements || elements.length === 0) {\n                list.innerHTML = '<div style=\"padding: 20px; text-align: center; color: #999;\">No elements found on current page</div>';\n                countSpan.textContent = '0';\n                return;\n            }\n\n            countSpan.textContent = elements.length;\n            \n            // Display elements in order with index\n            elements.forEach((el, idx) => {\n                const item = document.createElement('div');\n                item.className = 'element-item';\n                item.style.cssText = 'background: #f9f9f9; border-left: 4px solid #667eea; padding: 12px; margin-bottom: 8px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.2s; border: 1px solid #e0e0e0;';\n                \n                // Build element info\n                let details = '';\n                \n                // Index and type badge\n                details += '<div style=\"display: flex; align-items: center; gap: 8px; margin-bottom: 8px;\">';\n                details += '<span style=\"display: inline-block; background: #667eea; color: white; padding: 3px 8px; border-radius: 3px; font-size: 9px; font-weight: 700; min-width: 30px; text-align: center;\">#' + (el.index + 1) + '</span>';\n                details += '<span class=\"element-type\" style=\"display: inline-block; background: #764ba2; color: white; padding: 3px 8px; border-radius: 3px; font-size: 9px; font-weight: 700; text-transform: uppercase;\">' + el.type + '</span>';\n                \n                if (!el.visible) {\n                    details += '<span style=\"display: inline-block; background: #f44336; color: white; padding: 2px 6px; border-radius: 3px; font-size: 8px; font-weight: 600;\">HIDDEN</span>';\n                }\n                \n                if (el.interactive) {\n                    details += '<span style=\"display: inline-block; background: #4caf50; color: white; padding: 2px 6px; border-radius: 3px; font-size: 8px; font-weight: 600;\">INTERACTIVE</span>';\n                }\n                details += '</div>';\n                \n                // Tag name\n                details += '<div style=\"margin: 6px 0; font-size: 10px; color: #666;\"><strong>Tag:</strong> &lt;' + el.tag + '&gt;</div>';\n                \n                // Label/Identifier\n                if (el.label) {\n                    details += '<div style=\"margin: 6px 0; font-size: 10px; color: #333; font-weight: 600;\"><strong>Label:</strong> ' + el.label.substring(0, 80) + '</div>';\n                }\n                \n                // ID\n                if (el.id) {\n                    details += '<div style=\"margin: 6px 0; font-size: 10px; color: #333;\"><strong>ID:</strong> <code style=\"background: #f0f0f0; padding: 2px 4px; border-radius: 2px; font-family: monospace;\">' + el.id + '</code></div>';\n                }\n                \n                // Name\n                if (el.name) {\n                    details += '<div style=\"margin: 6px 0; font-size: 10px; color: #333;\"><strong>Name:</strong> <code style=\"background: #f0f0f0; padding: 2px 4px; border-radius: 2px; font-family: monospace;\">' + el.name + '</code></div>';\n                }\n                \n                // Aria Label\n                if (el.ariaLabel) {\n                    details += '<div style=\"margin: 6px 0; font-size: 10px; color: #333;\"><strong>Aria:</strong> ' + el.ariaLabel.substring(0, 60) + '</div>';\n                }\n                \n                // Placeholder\n                if (el.placeholder) {\n                    details += '<div style=\"margin: 6px 0; font-size: 10px; color: #666;\"><strong>Placeholder:</strong> ' + el.placeholder + '</div>';\n                }\n                \n                // Text content\n                if (el.text && el.text.length > 0) {\n                    details += '<div style=\"margin: 6px 0; padding: 8px; background: white; border-radius: 3px; border-left: 3px solid #2196f3; font-size: 10px; color: #444; word-break: break-word;\"><strong style=\"color: #2196f3;\">Text:</strong> ' + el.text.substring(0, 100) + (el.text.length > 100 ? '...' : '') + '</div>';\n                }\n                \n                // Position info\n                if (el.position) {\n                    details += '<div style=\"margin: 6px 0; font-size: 9px; color: #999; padding: 4px; background: #fafafa; border-radius: 2px;\"><strong>Position:</strong> Top: ' + el.position.top + 'px, Left: ' + el.position.left + 'px | Size: ' + el.position.width + 'x' + el.position.height + 'px</div>';\n                }\n                \n                item.innerHTML = details;\n                item.onmouseover = () => {\n                    item.style.background = '#e8f5e9';\n                    item.style.borderLeftColor = '#4caf50';\n                };\n                item.onmouseout = () => {\n                    item.style.background = '#f9f9f9';\n                    item.style.borderLeftColor = '#667eea';\n                };\n                list.appendChild(item);\n            });\n        }\n\n        function closeElements() {\n            document.getElementById('elementsModal').classList.remove('active');\n        }\n\n        async function updateProgress() {\n            const response = await fetch('/status');\n            const data = await response.json();\n\n            document.getElementById('currentStep').textContent = data.currentStep + ' / ' + data.totalSteps;\n            const progress = data.totalSteps > 0 ? Math.round((data.currentStep / data.totalSteps) * 100) : 0;\n            document.getElementById('progress').textContent = progress + '%';\n\n            updateLogs(data.logs);\n\n            // Show close browser button when automation is completed\n            if (data.isCompleted && data.hasBrowser) {\n                document.getElementById('closeBrowserBtn').style.display = 'inline-block';\n                document.getElementById('statusValue').textContent = 'Completed! Ready to close.';\n            }\n\n            if (data.isRunning) {\n                setTimeout(updateProgress, 1000);\n            } else {\n                resetUI();\n            }\n        }\n\n        // Track if user is manually scrolling\n        let isUserScrolling = false;\n        let scrollTimeout;\n\n        function setupLogAutoScroll() {\n            const logsDiv = document.getElementById('logs');\n            \n            // Detect when user starts scrolling\n            logsDiv.addEventListener('scroll', () => {\n                isUserScrolling = true;\n                clearTimeout(scrollTimeout);\n                \n                // Check if user scrolled to bottom\n                const isAtBottom = logsDiv.scrollHeight - logsDiv.clientHeight <= logsDiv.scrollTop + 5;\n                \n                // If they're at bottom or within 5px, resume auto-scroll\n                if (isAtBottom) {\n                    isUserScrolling = false;\n                } else {\n                    // Stop auto-scroll for 3 seconds after user stops scrolling\n                    scrollTimeout = setTimeout(() => {\n                        // Only resume if we're not actively running\n                        if (document.getElementById('statusValue').textContent !== 'Running') {\n                            isUserScrolling = false;\n                        }\n                    }, 3000);\n                }\n            }, { passive: true });\n        }\n\n        function updateLogs(logs) {\n            const logsDiv = document.getElementById('logs');\n            logsDiv.innerHTML = logs.map(log => '<div class=\"log-entry\">' + log + '</div>').join('');\n            \n            // Auto-scroll to bottom only if:\n            // 1. User isn't manually scrolling\n            // 2. OR User scrolled to bottom and left the area\n            if (!isUserScrolling) {\n                // Small delay to ensure DOM is updated\n                setTimeout(() => {\n                    logsDiv.scrollTop = logsDiv.scrollHeight;\n                }, 0);\n            }\n        }\n\n        function resetUI() {\n            document.getElementById('startBtn').disabled = false;\n            document.getElementById('pauseBtn').disabled = true;\n            document.getElementById('stopBtn').disabled = true;\n            document.getElementById('elementsBtn').disabled = true;\n            document.getElementById('pauseBtn').style.display = 'block';\n            document.getElementById('resumeBtn').style.display = 'none';\n            document.getElementById('statusValue').textContent = 'Complete';\n        }\n    </script>\n</body>\n</html>\n";
 var server = http.createServer(function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
-    var parsedUrl, pathname, body_1, e_87, elements, error_17;
+    var parsedUrl, pathname, body_1, e_88, elements, error_17;
     var _a;
     return __generator(this, function (_b) {
         switch (_b.label) {
@@ -7881,9 +8032,9 @@ var server = http.createServer(function (req, res) { return __awaiter(void 0, vo
                 res.end(JSON.stringify({ success: true, message: 'Browser closed' }));
                 return [3 /*break*/, 13];
             case 12:
-                e_87 = _b.sent();
+                e_88 = _b.sent();
                 res.writeHead(200);
-                res.end(JSON.stringify({ success: false, error: e_87.message }));
+                res.end(JSON.stringify({ success: false, error: e_88.message }));
                 return [3 /*break*/, 13];
             case 13: return [3 /*break*/, 15];
             case 14:

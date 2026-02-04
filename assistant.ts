@@ -3857,6 +3857,168 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
                 }
             }
 
+            // **CRITICAL: Handle hidden menu items in dropdown menus**
+            try {
+                const hiddenMenuItemHandled = await state.page?.evaluate((searchText) => {
+                    const searchLower = searchText.toLowerCase().trim();
+                    const allElements = document.querySelectorAll('*');
+                    
+                    // Find the target element even if hidden
+                    let targetElement: any = null;
+                    let targetParentCount = 0;
+                    
+                    for (const el of Array.from(allElements)) {
+                        const text = (el.textContent || '').trim().toLowerCase();
+                        const directText = Array.from(el.childNodes)
+                            .filter(n => n.nodeType === 3)
+                            .map(n => (n.textContent || '').trim())
+                            .join(' ')
+                            .toLowerCase();
+                        
+                        // Prioritize direct text match
+                        if (directText === searchLower || text === searchLower) {
+                            targetElement = el;
+                            targetParentCount = 0;
+                            break;
+                        }
+                        
+                        // Fallback to text containing
+                        if (!targetElement && (text.includes(searchLower) || directText.includes(searchLower))) {
+                            targetElement = el;
+                            targetParentCount++;
+                        }
+                    }
+                    
+                    if (!targetElement) return false;
+                    
+                    // Check if target is hidden
+                    const targetStyle = window.getComputedStyle(targetElement);
+                    const isHidden = targetStyle.display === 'none' || 
+                                    targetStyle.visibility === 'hidden' || 
+                                    targetStyle.opacity === '0';
+                    
+                    if (!isHidden) return false; // Not hidden, let normal flow handle it
+                    
+                    // Target IS hidden - find and click parent menu trigger
+                    let parent = targetElement.parentElement;
+                    let depth = 0;
+                    let parentMenu: any = null;
+                    
+                    // Walk up to find the menu container (limit to 15 levels)
+                    while (parent && depth < 15) {
+                        const parentStyle = window.getComputedStyle(parent);
+                        
+                        // Check if parent is a menu/dropdown container
+                        const isMenu = parent.classList.toString().includes('menu') ||
+                                      parent.classList.toString().includes('dropdown') ||
+                                      parent.classList.toString().includes('nav') ||
+                                      parent.getAttribute('role') === 'menu' ||
+                                      parent.getAttribute('role') === 'listbox' ||
+                                      parent.getAttribute('role') === 'group';
+                        
+                        if (isMenu) {
+                            parentMenu = parent;
+                            break;
+                        }
+                        
+                        parent = parent.parentElement;
+                        depth++;
+                    }
+                    
+                    if (!parentMenu) {
+                        // If we didn't find a menu container, try clicking the target anyway
+                        try {
+                            (targetElement as any).click?.();
+                            return true;
+                        } catch (e) {
+                            return false;
+                        }
+                    }
+                    
+                    // Found the menu container - now find its trigger button
+                    let trigger: any = null;
+                    
+                    // Strategy 1: Look for button/link that comes before menu in DOM (adjacent or nearby)
+                    let sibling = parentMenu.previousElementSibling;
+                    let checkCount = 0;
+                    while (sibling && !trigger && checkCount < 5) {
+                        if (sibling.tagName === 'BUTTON' || 
+                            sibling.getAttribute('role') === 'button' ||
+                            sibling.classList.toString().includes('trigger') ||
+                            sibling.classList.toString().includes('toggle') ||
+                            sibling.classList.toString().includes('btn')) {
+                            trigger = sibling;
+                        }
+                        sibling = sibling.previousElementSibling;
+                        checkCount++;
+                    }
+                    
+                    // Strategy 2: Check parent element's button
+                    if (!trigger && parentMenu.parentElement) {
+                        const parentButtons = parentMenu.parentElement.querySelectorAll('button, [role="button"], a');
+                        if (parentButtons.length > 0) {
+                            // Usually the first button is the trigger
+                            trigger = parentButtons[0];
+                        }
+                    }
+                    
+                    // Strategy 3: Find the closest button/link that might be the trigger
+                    if (!trigger) {
+                        const allClickables = document.querySelectorAll('button, [role="button"], a');
+                        for (let i = 0; i < allClickables.length; i++) {
+                            const el = allClickables[i];
+                            const elementText = (el.textContent || '').toLowerCase();
+                            
+                            // Check if this element's text is part of the menu's structure
+                            if (elementText.includes('loan') || elementText.includes('loans') || 
+                                elementText.includes('menu') || elementText.includes('dropdown')) {
+                                trigger = el;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (trigger) {
+                        // Click the trigger to open the menu
+                        (trigger as any).click?.();
+                        return true; // Return true and let the retry logic handle clicking the target
+                    }
+                    
+                    return false;
+                }, searchText);
+
+                if (hiddenMenuItemHandled) {
+                    log(`✅ [NESTED-MENU] Found hidden element in dropdown, opened parent menu`);
+                    await state.page?.waitForTimeout(800); // Wait for menu animation
+                    
+                    // Now try to click the hidden element again
+                    const retryClick = await state.page?.evaluate((searchText) => {
+                        const searchLower = searchText.toLowerCase().trim();
+                        const allElements = document.querySelectorAll('*');
+                        
+                        for (const el of Array.from(allElements)) {
+                            const text = (el.textContent || '').trim().toLowerCase();
+                            if (text === searchLower || text.includes(searchLower)) {
+                                const style = window.getComputedStyle(el);
+                                if (style.display !== 'none' && style.visibility !== 'hidden') {
+                                    (el as any).click?.();
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }, searchText);
+                    
+                    if (retryClick) {
+                        log(`✅ [NESTED-MENU] Successfully clicked hidden menu item after opening parent`);
+                        await state.page?.waitForTimeout(500);
+                        return true;
+                    }
+                }
+            } catch (e) {
+                log(`⚠️  Nested menu handling failed, continuing...`);
+            }
+
             // Strategy 0: Handle visible modals/overlays - DIRECTLY CLICK visible elements
             try {
                 const clickResult = await state.page?.evaluate((searchText) => {
