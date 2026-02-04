@@ -4963,15 +4963,16 @@ function clickWithRetry(target_1) {
                     _5.label = 14;
                 case 14:
                     _5.trys.push([14, 20, , 21]);
-                    return [4 /*yield*/, ((_a = state.page) === null || _a === void 0 ? void 0 : _a.evaluate(function (searchText) {
-                            var _a, _b, _c, _d;
+                    return [4 /*yield*/, ((_a = state.page) === null || _a === void 0 ? void 0 : _a.evaluate(function (_a) {
+                            var _b, _c, _d, _e;
+                            var searchText = _a.search;
                             var searchLower = searchText.toLowerCase().trim();
                             var allElements = document.querySelectorAll('*');
                             // Find the target element even if hidden
                             var targetElement = null;
                             var targetParentCount = 0;
-                            for (var _i = 0, _e = Array.from(allElements); _i < _e.length; _i++) {
-                                var el = _e[_i];
+                            for (var _i = 0, _f = Array.from(allElements); _i < _f.length; _i++) {
+                                var el = _f[_i];
                                 var text = (el.textContent || '').trim().toLowerCase();
                                 var directText = Array.from(el.childNodes)
                                     .filter(function (n) { return n.nodeType === 3; })
@@ -5023,7 +5024,7 @@ function clickWithRetry(target_1) {
                             if (!parentMenu) {
                                 // If we didn't find a menu container, try clicking the target anyway
                                 try {
-                                    (_b = (_a = targetElement).click) === null || _b === void 0 ? void 0 : _b.call(_a);
+                                    (_c = (_b = targetElement).click) === null || _c === void 0 ? void 0 : _c.call(_b);
                                     return true;
                                 }
                                 catch (e) {
@@ -5070,11 +5071,11 @@ function clickWithRetry(target_1) {
                             }
                             if (trigger) {
                                 // Click the trigger to open the menu
-                                (_d = (_c = trigger).click) === null || _d === void 0 ? void 0 : _d.call(_c);
+                                (_e = (_d = trigger).click) === null || _e === void 0 ? void 0 : _e.call(_d);
                                 return true; // Return true and let the retry logic handle clicking the target
                             }
                             return false;
-                        }, searchText))];
+                        }, { search: target }))];
                 case 15:
                     hiddenMenuItemHandled = _5.sent();
                     if (!hiddenMenuItemHandled) return [3 /*break*/, 19];
@@ -5082,23 +5083,24 @@ function clickWithRetry(target_1) {
                     return [4 /*yield*/, ((_b = state.page) === null || _b === void 0 ? void 0 : _b.waitForTimeout(800))];
                 case 16:
                     _5.sent(); // Wait for menu animation
-                    return [4 /*yield*/, ((_c = state.page) === null || _c === void 0 ? void 0 : _c.evaluate(function (searchText) {
-                            var _a, _b;
+                    return [4 /*yield*/, ((_c = state.page) === null || _c === void 0 ? void 0 : _c.evaluate(function (_a) {
+                            var _b, _c;
+                            var searchText = _a.search;
                             var searchLower = searchText.toLowerCase().trim();
                             var allElements = document.querySelectorAll('*');
-                            for (var _i = 0, _c = Array.from(allElements); _i < _c.length; _i++) {
-                                var el = _c[_i];
+                            for (var _i = 0, _d = Array.from(allElements); _i < _d.length; _i++) {
+                                var el = _d[_i];
                                 var text = (el.textContent || '').trim().toLowerCase();
                                 if (text === searchLower || text.includes(searchLower)) {
                                     var style = window.getComputedStyle(el);
                                     if (style.display !== 'none' && style.visibility !== 'hidden') {
-                                        (_b = (_a = el).click) === null || _b === void 0 ? void 0 : _b.call(_a);
+                                        (_c = (_b = el).click) === null || _c === void 0 ? void 0 : _c.call(_b);
                                         return true;
                                     }
                                 }
                             }
                             return false;
-                        }, searchText))];
+                        }, { search: target }))];
                 case 17:
                     retryClick = _5.sent();
                     if (!retryClick) return [3 /*break*/, 19];

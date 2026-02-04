@@ -3859,7 +3859,7 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
 
             // **CRITICAL: Handle hidden menu items in dropdown menus**
             try {
-                const hiddenMenuItemHandled = await state.page?.evaluate((searchText) => {
+                const hiddenMenuItemHandled = await state.page?.evaluate(({ search: searchText }) => {
                     const searchLower = searchText.toLowerCase().trim();
                     const allElements = document.querySelectorAll('*');
                     
@@ -3985,14 +3985,14 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
                     }
                     
                     return false;
-                }, searchText);
+                }, { search: target });
 
                 if (hiddenMenuItemHandled) {
                     log(`✅ [NESTED-MENU] Found hidden element in dropdown, opened parent menu`);
                     await state.page?.waitForTimeout(800); // Wait for menu animation
                     
                     // Now try to click the hidden element again
-                    const retryClick = await state.page?.evaluate((searchText) => {
+                    const retryClick = await state.page?.evaluate(({ search: searchText }) => {
                         const searchLower = searchText.toLowerCase().trim();
                         const allElements = document.querySelectorAll('*');
                         
@@ -4007,7 +4007,7 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
                             }
                         }
                         return false;
-                    }, searchText);
+                    }, { search: target });
                     
                     if (retryClick) {
                         log(`✅ [NESTED-MENU] Successfully clicked hidden menu item after opening parent`);
