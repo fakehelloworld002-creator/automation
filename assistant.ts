@@ -103,6 +103,90 @@ function ensureDir(dirPath: string) {
     }
 }
 
+/**
+ * Extract ONLY the direct text of an element (not nested children)
+ * Returns clean, readable label for display
+ * @param element - The HTML element to extract text from
+ * @returns Clean label text, max 60 characters
+ */
+function getDirectElementText(element: any): string {
+    try {
+        // Get only direct text nodes (immediate children, no nested)
+        let directText = '';
+        
+        if (element.childNodes) {
+            for (const node of Array.from(element.childNodes) as any[]) {
+                // Only process text nodes
+                if (node.nodeType === 3) { // NODE_TYPE.TEXT_NODE
+                    const text = (node.textContent || '').trim();
+                    if (text) {
+                        directText += text + ' ';
+                    }
+                }
+            }
+        }
+        
+        // Fallback: try aria-label, title, placeholder, value
+        if (!directText.trim()) {
+            const ariaLabel = element.getAttribute?.('aria-label')?.trim() || '';
+            const title = element.getAttribute?.('title')?.trim() || '';
+            const placeholder = element.getAttribute?.('placeholder')?.trim() || '';
+            const value = element.value?.trim() || '';
+            
+            directText = ariaLabel || title || placeholder || value || '';
+        }
+        
+        // Clean and truncate
+        return directText.trim().replace(/\s+/g, ' ').substring(0, 60);
+    } catch (e) {
+        return 'Element';
+    }
+}
+
+/**
+ * Extract clean element label text using Playwright locator (async)
+ * Gets only the direct children text, not nested
+ * @param locator - Playwright locator
+ * @returns Clean label text, max 60 characters
+ */
+async function getCleanElementLabel(locator: any): Promise<string> {
+    try {
+        const text = await locator.evaluate((el: any) => {
+            // Prefer aria-label -> title -> placeholder -> direct text
+            const ariaLabel = el.getAttribute?.('aria-label')?.trim() || '';
+            if (ariaLabel) return ariaLabel;
+            
+            const title = el.getAttribute?.('title')?.trim() || '';
+            if (title) return title;
+            
+            const placeholder = el.getAttribute?.('placeholder')?.trim() || '';
+            if (placeholder) return placeholder;
+            
+            const value = el.value?.trim() || '';
+            if (value) return value;
+            
+            // Get only direct text nodes (not nested)
+            let directText = '';
+            if (el.childNodes) {
+                for (const node of Array.from(el.childNodes) as any[]) {
+                    if (node.nodeType === 3) { // Text node
+                        const txt = (node.textContent || '').trim();
+                        if (txt) {
+                            directText += txt + ' ';
+                        }
+                    }
+                }
+            }
+            
+            return directText.trim().replace(/\s+/g, ' ').substring(0, 60) || el.textContent?.trim().substring(0, 60) || 'Element';
+        }).catch(() => 'Unknown');
+        
+        return (text || 'Unknown').substring(0, 60);
+    } catch {
+        return 'Unknown';
+    }
+}
+
 function log(message: string) {
     const timestamp = new Date().toISOString();
     const formattedMsg = `[${timestamp}] ${message}`;
@@ -700,6 +784,192 @@ async function scrollToElementByText(text: string): Promise<boolean> {
     } catch (e) {
         log(`Scroll by text failed: ${e}`);
         return false;
+    }
+}
+
+/* ============== CURSOR POINTER INDICATOR FOR CLICKS ============== */
+
+/**
+ * Inject CSS animation keyframes for cursor pointer animation
+ */
+async function injectClickPointerAnimationCSS(frame: any): Promise<void> {
+    try {
+        await frame.evaluate(() => {
+            // Check if animation style already exists
+            if (document.getElementById('__click_pointer_animation_styles__')) {
+                return;
+            }
+            
+            // Create and inject CSS keyframes
+            const style = document.createElement('style');
+            style.id = '__click_pointer_animation_styles__';
+            style.textContent = `
+                @keyframes clickPulse {
+                    0% {
+                        r: 20;
+                        stroke-width: 3;
+                        opacity: 1;
+                    }
+                    50% {
+                        r: 28;
+                        stroke-width: 2;
+                        opacity: 0.7;
+                    }
+                    100% {
+                        r: 20;
+                        stroke-width: 3;
+                        opacity: 1;
+                    }
+                }
+                
+                @keyframes pointerBounce {
+                    0%, 100% {
+                        transform: translate(-50%, -50%) scale(1);
+                    }
+                    50% {
+                        transform: translate(-50%, -50%) scale(1.15);
+                    }
+                }
+                
+                #__click_pointer_indicator__ {
+                    animation: pointerBounce 0.6s ease-in-out infinite !important;
+                }
+                
+                #__click_pointer_indicator__ circle:first-child {
+                    animation: clickPulse 0.6s ease-in-out infinite;
+                }
+            `;
+            document.head.appendChild(style);
+        });
+    } catch (e) {
+        // Silently fail if injection doesn't work
+    }
+}
+
+/**
+ * Show a cursor/pointer indicator at the target element's location for 2 seconds
+ * before clicking it
+ */
+async function showClickPointer(frame: any, selector: string): Promise<boolean> {
+    try {
+        // First inject animation styles
+        await injectClickPointerAnimationCSS(frame);
+        
+        const shown = await frame.evaluate((sel) => {
+            const element = document.querySelector(sel) as HTMLElement;
+            if (!element) return false;
+            
+            const rect = element.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            
+            // Create pointer element
+            const pointer = document.createElement('div');
+            pointer.id = '__click_pointer_indicator__';
+            pointer.style.position = 'fixed';
+            pointer.style.left = centerX + 'px';
+            pointer.style.top = centerY + 'px';
+            pointer.style.width = '50px';
+            pointer.style.height = '50px';
+            pointer.style.transform = 'translate(-50%, -50%)';
+            pointer.style.zIndex = '999999';
+            pointer.style.pointerEvents = 'none';
+            pointer.style.display = 'flex';
+            pointer.style.alignItems = 'center';
+            pointer.style.justifyContent = 'center';
+            
+            // Create pointer SVG/icon with ANIMATED circles
+            pointer.innerHTML = `<svg width="50" height="50" viewBox="0 0 50 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="25" cy="25" r="20" stroke="#FF6B6B" stroke-width="3" fill="rgba(255, 107, 107, 0.2)"/>
+                <circle cx="25" cy="25" r="8" fill="#FF6B6B"/>
+                <circle cx="25" cy="25" r="5" fill="white"/>
+            </svg>`;
+            
+            document.body.appendChild(pointer);
+            return true;
+        }, selector);
+        
+        return shown;
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * Show cursor pointer by searching for element by text attribute
+ */
+async function showClickPointerByAttribute(frame: any, searchText: string): Promise<boolean> {
+    try {
+        // First inject animation styles
+        await injectClickPointerAnimationCSS(frame);
+        
+        const shown = await frame.evaluate((searchLower) => {
+            // Find the element
+            const buttons = Array.from(document.querySelectorAll('button, a, [role="button"], [role="tab"], input, [onclick], div[onclick]'));
+            let targetElement: HTMLElement | null = null;
+            
+            for (const btn of buttons) {
+                const text = (btn.textContent || '').toLowerCase();
+                const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                const title = (btn.getAttribute('title') || '').toLowerCase();
+                
+                if (text.includes(searchLower) || ariaLabel.includes(searchLower) || title.includes(searchLower)) {
+                    targetElement = btn as HTMLElement;
+                    break;
+                }
+            }
+            
+            if (!targetElement) return false;
+            
+            const rect = targetElement.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            
+            // Create pointer element
+            const pointer = document.createElement('div');
+            pointer.id = '__click_pointer_indicator__';
+            pointer.style.position = 'fixed';
+            pointer.style.left = centerX + 'px';
+            pointer.style.top = centerY + 'px';
+            pointer.style.width = '50px';
+            pointer.style.height = '50px';
+            pointer.style.transform = 'translate(-50%, -50%)';
+            pointer.style.zIndex = '999999';
+            pointer.style.pointerEvents = 'none';
+            pointer.style.display = 'flex';
+            pointer.style.alignItems = 'center';
+            pointer.style.justifyContent = 'center';
+            
+            // Create pointer SVG/icon with ANIMATED circles
+            pointer.innerHTML = `<svg width="50" height="50" viewBox="0 0 50 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="25" cy="25" r="20" stroke="#FF6B6B" stroke-width="3" fill="rgba(255, 107, 107, 0.2)"/>
+                <circle cx="25" cy="25" r="8" fill="#FF6B6B"/>
+                <circle cx="25" cy="25" r="5" fill="white"/>
+            </svg>`;
+            
+            document.body.appendChild(pointer);
+            return true;
+        }, searchText.toLowerCase());
+        
+        return shown;
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * Remove cursor pointer indicator
+ */
+async function removeClickPointer(frame: any): Promise<void> {
+    try {
+        await frame.evaluate(() => {
+            const pointer = document.getElementById('__click_pointer_indicator__');
+            if (pointer) {
+                pointer.remove();
+            }
+        });
+    } catch (e) {
+        // Silently fail
     }
 }
 
@@ -1881,6 +2151,130 @@ async function validateFrameAccess(frame: any): Promise<boolean> {
 }
 
 /**
+ * Helper function to find and click dropdown parent buttons - ENHANCED
+ * Uses multiple strategies to identify the correct trigger button for each dropdown level
+ */
+async function findAndClickParentDropdownTrigger(frame: any, parentIndex: number, targetText: string): Promise<boolean> {
+    try {
+        // Get all potentially clickable elements
+        const clickables = await frame.locator('button, [role="button"], [onclick], a, [role="menuitem"], [role="option"]').all();
+        
+        // Strategy 1: Try to find button by proximity and aria attributes
+        for (const clickable of clickables) {
+            try {
+                // Check if this element controls a dropdown
+                const ariaControls = await clickable.getAttribute('aria-controls').catch(() => null);
+                const ariaExpanded = await clickable.getAttribute('aria-expanded').catch(() => null);
+                const ariaHaspopup = await clickable.getAttribute('aria-haspopup').catch(() => null);
+                
+                // This looks like a dropdown trigger
+                if (ariaControls || ariaHaspopup === 'true' || ariaHaspopup === 'menu' || ariaExpanded) {
+                    const isVisible = await clickable.isVisible().catch(() => false);
+                    if (isVisible) {
+                        await clickable.click({ timeout: 2000, force: true }).catch(() => {});
+                        await frame.waitForTimeout(400);
+                        return true;
+                    }
+                }
+            } catch (e) {}
+        }
+        
+        // Strategy 2: Try clicking by matching text of previous menu items
+        // This helps with hierarchical menus where buttons have the parent menu name
+        if (targetText && targetText.length > 0) {
+            const partialText = targetText.split(/[/>|,]/)[0].trim();
+            const keywords = partialText.toLowerCase().split(/\s+/);
+            
+            for (const clickable of clickables) {
+                try {
+                    const text = await clickable.textContent().catch(() => '');
+                    const textLower = text.toLowerCase();
+                    const isVisible = await clickable.isVisible().catch(() => false);
+                    
+                    // Check if at least one keyword from target matches
+                    const hasKeyword = keywords.some(kw => kw.length > 0 && textLower.includes(kw));
+                    
+                    if (hasKeyword && isVisible && text.trim().length > 0 && text.trim().length < 100) {
+                        await clickable.click({ timeout: 2000, force: true }).catch(async () => {
+                            await clickable.evaluate((e: any) => {
+                                if (e.click) e.click();
+                                else e.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                            });
+                        });
+                        await frame.waitForTimeout(400);
+                        return true;
+                    }
+                } catch (e) {}
+            }
+        }
+        
+        return false;
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * Helper function to find and click dropdown parent buttons
+ * Intelligently finds the trigger button for a dropdown container
+ */
+async function clickDropdownTrigger(frame: any, dropdownContainer: any, level: number): Promise<boolean> {
+    try {
+        // Strategy 1: Look for immediate parent button/anchor that might toggle this dropdown
+        const parentButton = await frame.evaluate((container: any) => {
+            // Check if there's a button/anchor immediately adjacent (previous sibling or in parent)
+            let current = container;
+            
+            // Try: Find button in immediate parent that precedes dropdown
+            if (current.parentElement) {
+                const siblings = Array.from(current.parentElement.children);
+                const containerIndex = siblings.indexOf(current);
+                
+                for (let i = containerIndex - 1; i >= Math.max(containerIndex - 3, 0); i--) {
+                    const sibling = siblings[i] as HTMLElement;
+                    const buttons = sibling.querySelectorAll('button, [role="button"], a[href]');
+                    if (buttons.length > 0) return buttons[buttons.length - 1]; // Last button
+                    if (sibling.tagName === 'BUTTON' || sibling.getAttribute('role') === 'button') return sibling;
+                }
+            }
+            
+            // Try: Look for button inside dropdown (toggle button)
+            const internalButton = container.querySelector('button, [role="button"]');
+            if (internalButton && internalButton.offsetParent !== null) return internalButton;
+            
+            // Try: Parent element that has button or is itself clickable
+            let p = container.parentElement;
+            while (p && p !== document.documentElement) {
+                if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button') return p;
+                const btn = p.querySelector(':scope > button, :scope > [role="button"]');
+                if (btn) return btn;
+                p = p.parentElement;
+            }
+            
+            return null;
+        }, dropdownContainer);
+        
+        if (parentButton) {
+            const btn = await frame.locator('button, [role="button"]').first();
+            await btn.click({ timeout: 2000, force: true }).catch(async () => {
+                await btn.evaluate((e: any) => {
+                    if (e.click) e.click();
+                    else e.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                });
+            });
+            await frame.waitForTimeout(400);
+            return true;
+        }
+        
+        return false;
+    } catch (e) {
+        return false;
+    }
+}
+
+/* ============== CLICK ACTION HANDLER ============== */
+
+/**
  * Execute CLICK action in frame with sequential pattern matching
  * ENHANCED: Better detection for subwindow elements and nested iframes
  * 
@@ -1912,8 +2306,14 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                     const count = await btn.count().catch(() => 0);
                     if (count > 0) {
                         try {
+                            // Show cursor pointer before clicking
+                            await showClickPointer(frame, `#${buttonId}`);
+                            log(`👆 [POINTER] Clicking: "${target}" (cursor shown for 2 seconds...)`);
+                            await frame.waitForTimeout(2000);
+                            
                             await btn.click({ force: true, timeout: 5000 });
                             log(`✅ [DIRECT-ID${framePath}] Successfully clicked button via ID: "#${buttonId}" (target: "${target}")`);
+                            await removeClickPointer(frame);
                             await frame.waitForTimeout(500);
                             return true;
                         } catch (e1) {
@@ -1979,8 +2379,14 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                                 const isVisible = await el.isVisible().catch(() => false);
                                 if (isVisible) {
                                     await el.scrollIntoViewIfNeeded();
+                                    // Show cursor pointer before clicking
+                                    await showClickPointerByAttribute(frame, target);
+                                    log(`👆 [POINTER] Clicking: "${target}" (cursor shown for 2 seconds...)`);
+                                    await frame.waitForTimeout(2000);
+                                    
                                     await el.click({ force: true, timeout: 5000 });
                                     log(`✅ [START-PATTERN${framePath}] Clicked Start button using pattern: "${pattern}"`);
+                                    await removeClickPointer(frame);
                                     await frame.waitForTimeout(500);
                                     return true;
                                 }
@@ -2039,10 +2445,11 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                                 // Double-check it's not partners
                                 const text = await exactElement.textContent().catch(() => '');
                                 if (!text.toLowerCase().includes('partner') && !text.toLowerCase().includes('business')) {
+                                    const cleanLabel = await getCleanElementLabel(exactElement);
                                     await exactElement.click({ timeout: 5000 }).catch(async () => {
                                         await exactElement.evaluate((e: any) => e.click());
                                     });
-                                    log(`✅ Clicked: "${text.trim().substring(0, 60)}${text.trim().length > 60 ? '...' : ''}"`);
+                                    log(`✅ Clicked: "${cleanLabel}"`);
                                     await frame.waitForTimeout(2000);
                                     return true;
                                 }
@@ -2081,10 +2488,16 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                             const visible = await el.isVisible().catch(() => false);
                             if (visible) {
                                 await el.scrollIntoViewIfNeeded();
+                                // Show cursor pointer before clicking
+                                await showClickPointerByAttribute(frame, target);
+                                log(`👆 [POINTER] Clicking: "${target}" (cursor shown for 2 seconds...)`);
+                                await frame.waitForTimeout(2000);
+                                
                                 await el.click({ timeout: 5000 }).catch(async () => {
                                     await el.evaluate((e: any) => e.click());
                                 });
                                 log(`✅ Clicked: "${textTrim}"`);
+                                await removeClickPointer(frame);
                                 await frame.waitForTimeout(2000);
                                 return true;
                             }
@@ -2094,10 +2507,16 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                                 const visible = await el.isVisible().catch(() => false);
                                 if (visible) {
                                     await el.scrollIntoViewIfNeeded();
+                                    // Show cursor pointer before clicking
+                                    await showClickPointerByAttribute(frame, target);
+                                    log(`👆 [POINTER] Clicking: "${target}" (cursor shown for 2 seconds...)`);
+                                    await frame.waitForTimeout(2000);
+                                    
                                     await el.click({ timeout: 5000 }).catch(async () => {
                                         await el.evaluate((e: any) => e.click());
                                     });
                                     log(`✅ Clicked: "${textTrim}"`);
+                                    await removeClickPointer(frame);
                                     await frame.waitForTimeout(2000);
                                     return true;
                                 }
@@ -2139,19 +2558,392 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                 }
             }
 
-            // **SPECIAL HANDLER FOR DROPDOWN/SELECT ELEMENTS**
+            // **HELPER FUNCTION: Detect and get the currently visible dropdown container**
+            async function getCurrentVisibleDropdown(): Promise<any> {
+                try {
+                    const dropdownInfo = await frame.evaluate(() => {
+                        // Look for DOM elements that appear to be dropdown containers
+                        const potentialDropdowns = document.querySelectorAll(
+                            '[role="menu"], [role="listbox"], [role="combobox"], .dropdown, .menu, [class*="dropdown"], [class*="menu"], [class*="popover"], [class*="list"]'
+                        );
+                        
+                        for (const dropdown of Array.from(potentialDropdowns)) {
+                            const el = dropdown as HTMLElement;
+                            const style = window.getComputedStyle(el);
+                            const rect = el.getBoundingClientRect();
+                            
+                            // Check if element is visible (not display:none, not hidden, has size)
+                            if (style.display !== 'none' && 
+                                style.visibility !== 'hidden' && 
+                                rect.width > 0 && 
+                                rect.height > 0 &&
+                                el.offsetParent !== null) {
+                                
+                                // Return the first visible dropdown
+                                return {
+                                    found: true,
+                                    selector: el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : el.tagName,
+                                    tagName: el.tagName,
+                                    id: el.id,
+                                    className: el.className
+                                };
+                            }
+                        }
+                        
+                        return { found: false };
+                    });
+                    
+                    if (dropdownInfo.found) {
+                        log(`   📂 [DROPDOWN DETECTED] Found visible dropdown: ${dropdownInfo.selector}`);
+                        return dropdownInfo;
+                    }
+                } catch (e) {
+                    // Silent fail
+                }
+                
+                return null;
+            }
+
+            // **SPECIAL HANDLER FOR >> (SIBLING BUTTONS) - e.g., "Loans > Insta Personal Loan >> Check Offer"**
             try {
-                // Check if target is a dropdown item - if so, open parent dropdown first
+                if (target.includes('>>')) {
+                    log(`   📋 [SIBLING BUTTON DETECTED] Target contains >> (sibling button pattern)`);
+                    
+                    // Split: "Loans > Insta Personal Loan >> Check Offer" becomes
+                    // parent path: "Loans > Insta Personal Loan"
+                    // button name: "Check Offer"
+                    const siblingParts = target.split(/\s*>>\s*/);
+                    if (siblingParts.length >= 2) {
+                        const parentPath = siblingParts[0].trim();
+                        const siblingButton = siblingParts[siblingParts.length - 1].trim().replace(/\s*>>$/, '');
+                        
+                        log(`   📍 Parent path: "${parentPath}"`);
+                        log(`   🔘 Sibling button to click: "${siblingButton}"`);
+                        
+                        // Step 1: Navigate to parent using the parent path
+                        const parentSteps = parentPath.split(/\s*>\s*/).filter((s: string) => s.trim().length > 0);
+                        
+                        // Click through parent steps to open the dropdown
+                        for (let pIdx = 0; pIdx < parentSteps.length; pIdx++) {
+                            const step = parentSteps[pIdx].trim();
+                            log(`   ⏭️  [PARENT STEP ${pIdx + 1}/${parentSteps.length}] Navigating to: "${step}"`);
+                            
+                            // **PRIORITY: Check for visible dropdown first for sibling button too**
+                            const visibleDropdown = await getCurrentVisibleDropdown();
+                            
+                            let elements: any[] = [];
+                            if (visibleDropdown && visibleDropdown.found) {
+                                log(`   🔍 Searching within visible dropdown for parent step: ${visibleDropdown.selector}`);
+                                try {
+                                    const dropdownContainer = await frame.locator(visibleDropdown.selector).first();
+                                    if (dropdownContainer) {
+                                        elements = await dropdownContainer.locator('a, button, [role="button"], [role="option"], [role="menuitem"], li, div[onclick], span').all();
+                                    }
+                                } catch (e) {
+                                    elements = await frame.locator('a, button, [role="button"], [role="option"], [role="menuitem"], li, div[onclick], span').all();
+                                }
+                            } else {
+                                elements = await frame.locator('a, button, [role="button"], [role="option"], [role="menuitem"], li, div[onclick], span').all();
+                            }
+                            
+                            let found: any = null;
+                            
+                            for (const el of elements) {
+                                const text = await el.textContent().catch(() => '');
+                                if (text.toLowerCase().includes(step.toLowerCase())) {
+                                    const visible = await el.isVisible().catch(() => false);
+                                    if (visible) {
+                                        found = el;
+                                        log(`   ✓ Found parent step "${text.trim()}"`);
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if (found) {
+                                await found.click({ timeout: 3000, force: true }).catch(async () => {
+                                    await found.evaluate((e: any) => {
+                                        if (e.click) e.click();
+                                        else e.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                                    });
+                                });
+                                await frame.waitForTimeout(600);
+                                log(`   ✓ Clicked parent step ${pIdx + 1}`);
+                            } else {
+                                log(`   ⚠️  Parent step not found, continuing...`);
+                            }
+                        }
+                        
+                        // Step 2: Now find and click the sibling button in the same dropdown
+                        await frame.waitForTimeout(500);
+                        
+                        // **PRIORITY: Search for sibling button within visible dropdown FIRST**
+                        const visibleDropdownForSibling = await getCurrentVisibleDropdown();
+                        
+                        let allElements: any[] = [];
+                        if (visibleDropdownForSibling && visibleDropdownForSibling.found) {
+                            log(`   🔍 Searching for sibling button within visible dropdown: ${visibleDropdownForSibling.selector}`);
+                            try {
+                                const dropdownContainer = await frame.locator(visibleDropdownForSibling.selector).first();
+                                if (dropdownContainer) {
+                                    allElements = await dropdownContainer.locator('a, button, [role="button"], [role="option"], [role="menuitem"], li, [onclick], span').all();
+                                }
+                            } catch (e) {
+                                allElements = await frame.locator('a, button, [role="button"], [role="option"], [role="menuitem"], li, [onclick], span').all();
+                            }
+                        } else {
+                            allElements = await frame.locator('a, button, [role="button"], [role="option"], [role="menuitem"], li, [onclick], span').all();
+                        }
+                        
+                        let siblingFound: any = null;
+                        for (const el of allElements) {
+                            const text = await el.textContent().catch(() => '');
+                            const textLower = text.toLowerCase();
+                            const buttonLower = siblingButton.toLowerCase();
+                            
+                            if (textLower === buttonLower || (textLower.includes(buttonLower) && text.trim().length < 100)) {
+                                const visible = await el.isVisible().catch(() => false);
+                                if (visible) {
+                                    siblingFound = el;
+                                    log(`   ✓ Found sibling button: "${text.trim()}"`);
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (siblingFound) {
+                            // Ensure button is in viewport
+                            await siblingFound.scrollIntoViewIfNeeded().catch(() => {});
+                            await frame.waitForTimeout(300);
+                            
+                            const buttonLabel = await getCleanElementLabel(siblingFound);
+                            const buttonInfo = await siblingFound.evaluate((el: any) => ({
+                                tagName: el.tagName,
+                                className: el.className
+                            })).catch(() => ({}));
+                            
+                            log(`   🎯 Clicking sibling button [${buttonInfo.tagName}]: "${buttonLabel}"`);
+                            
+                            try {
+                                await siblingFound.click({ timeout: 5000 }).catch(async () => {
+                                    await siblingFound.evaluate((e: any) => {
+                                        if (e.click) e.click();
+                                        else e.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                                    });
+                                });
+                                log(`   ✅ Successfully clicked sibling button: "${siblingButton}"`);
+                                await frame.waitForTimeout(500);
+                                return true;
+                            } catch (clickErr) {
+                                log(`   ❌ Failed to click sibling button: ${(clickErr as any).message}`);
+                                return false;
+                            }
+                        } else {
+                            log(`   ❌ Sibling button "${siblingButton}" not found in dropdown`);
+                            return false;
+                        }
+                    }
+                }
+            } catch (siblingErr) {
+                log(`   ⚠️  Sibling button handler error: ${(siblingErr as any).message}`);
+            }
+
+            // **HIERARCHICAL DROPDOWN NAVIGATION - Parse paths like "Loans > Insta Personal Loan > Check Offer"**
+            try {
+                // Check if target contains dropdown path separators (> or >>)
+                const hasHierarchyMarkers = target.includes('>');
+                
+                if (hasHierarchyMarkers) {
+                    log(`   📋 [HIERARCHICAL PATH DETECTED] Parsing dropdown navigation path...`);
+                    
+                    // Split by > only (not >>)
+                    const pathSteps = target.split(/\s*>\s*/).filter((step: string) => step.trim().length > 0 && !step.includes('>'));
+                    log(`   📍 Navigation steps: ${pathSteps.map((s: string) => `"${s.trim()}"`).join(' → ')}`);
+                    
+                    // Navigate through each step
+                    for (let stepIdx = 0; stepIdx < pathSteps.length; stepIdx++) {
+                        const currentStep = pathSteps[stepIdx].trim();
+                        const isLastStep = stepIdx === pathSteps.length - 1;
+                        
+                        log(`\n   ⏭️  [STEP ${stepIdx + 1}/${pathSteps.length}] Navigating to: "${currentStep}"`);
+                        
+                        // **PRIORITY: First check for visible dropdown container**
+                        const visibleDropdown = await getCurrentVisibleDropdown();
+                        
+                        // Find the element for this navigation step - SEARCH IN DROPDOWN FIRST if one is visible
+                        let stepElements: any[] = [];
+                        
+                        if (visibleDropdown && visibleDropdown.found) {
+                            // Search WITHIN the visible dropdown ONLY
+                            log(`   🔍 Searching within visible dropdown: ${visibleDropdown.selector}`);
+                            
+                            try {
+                                // Get the dropdown container and search within it
+                                const dropdownContainer = await frame.locator(visibleDropdown.selector).first();
+                                if (dropdownContainer) {
+                                    stepElements = await dropdownContainer.locator('a, button, [role="button"], [role="option"], [role="menuitem"], li, div[onclick], span').all();
+                                    log(`   📂 Found ${stepElements.length} elements within dropdown`);
+                                }
+                            } catch (e) {
+                                log(`   ⚠️  Could not search within dropdown, falling back to full page search`);
+                                stepElements = await frame.locator('a, button, [role="button"], [role="option"], [role="menuitem"], li, div[onclick], span').all();
+                            }
+                        } else {
+                            // No visible dropdown - search full page
+                            log(`   📄 No visible dropdown - searching full page...`);
+                            stepElements = await frame.locator('a, button, [role="button"], [role="option"], [role="menuitem"], li, div[onclick], span').all();
+                        }
+                        
+                        let stepElement: any = null;
+                        let stepText: string = '';
+                        let visibleMatches: any[] = [];
+                        
+                        // Find all visible matches for this step
+                        for (const el of stepElements) {
+                            const text = await el.textContent().catch(() => '');
+                            const textLower = text.toLowerCase();
+                            const stepLower = currentStep.toLowerCase();
+                            
+                            // Check for exact or close match
+                            if (textLower === stepLower || textLower.includes(stepLower)) {
+                                const isVisible = await el.isVisible().catch(() => false);
+                                if (isVisible) {
+                                    visibleMatches.push({ el, text });
+                                }
+                            }
+                        }
+                        
+                        if (visibleMatches.length > 0) {
+                            // Use the first visible match
+                            stepElement = visibleMatches[0].el;
+                            stepText = visibleMatches[0].text;
+                            log(`   ✓ Found "${stepText.trim()}" (${visibleMatches.length} visible match(es))`);
+                        } else {
+                            // Try finding non-visible element to open parent
+                            for (const el of stepElements) {
+                                const text = await el.textContent().catch(() => '');
+                                if (text.toLowerCase().includes(currentStep.toLowerCase())) {
+                                    stepElement = el;
+                                    stepText = text;
+                                    log(`   ⚠️  Found "${stepText.trim()}" but NOT visible - trying to open parent...`);
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (stepElement) {
+                            const isVisible = await stepElement.isVisible().catch(() => false);
+                            
+                            // If not visible, try opening parent dropdowns
+                            if (!isVisible) {
+                                log(`   🔓 Opening parent dropdown(s)...`);
+                                
+                                // Try clicking parent dropdown button (first clickable element)
+                                try {
+                                    const parentButtons = await frame.locator('button, [role="button"]').all();
+                                    for (const parentBtn of parentButtons) {
+                                        const parentVisible = await parentBtn.isVisible().catch(() => false);
+                                        if (parentVisible) {
+                                            await parentBtn.click({ timeout: 2000, force: true }).catch(() => {});
+                                            await frame.waitForTimeout(500);
+                                            break; // Click first visible button to open dropdown
+                                        }
+                                    }
+                                } catch (e) {}
+                            }
+                            
+                            // Wait a bit for dropdown to render
+                            await frame.waitForTimeout(300);
+                            
+                            // Verify element is now visible
+                            const nowVisible = await stepElement.isVisible().catch(() => false);
+                            
+                            if (nowVisible) {
+                                // Verify it's in viewport
+                                const inViewport = await stepElement.evaluate((el: any) => {
+                                    const rect = el.getBoundingClientRect();
+                                    return rect.top >= 0 && rect.left >= 0 && 
+                                           rect.bottom <= window.innerHeight && 
+                                           rect.right <= window.innerWidth;
+                                }).catch(() => false);
+                                
+                                if (!inViewport) {
+                                    await stepElement.scrollIntoViewIfNeeded();
+                                    await frame.waitForTimeout(200);
+                                }
+                                
+                                // Click the element
+                                log(`   🎯 Clicking: "${stepText.trim().substring(0, 50)}"`);
+                                
+                                await stepElement.click({ timeout: 5000, force: true }).catch(async () => {
+                                    await stepElement.evaluate((e: any) => {
+                                        if (e.click) e.click();
+                                        else e.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                                    });
+                                });
+                                
+                                log(`   ✅ Clicked step ${stepIdx + 1}`);
+                                
+                                // Wait longer for submenu to appear if not last step
+                                if (!isLastStep) {
+                                    log(`   ⏳ Waiting for submenu to appear...`);
+                                    await frame.waitForTimeout(800); // Increased wait for deep nesting
+                                } else {
+                                    await frame.waitForTimeout(500);
+                                }
+                            } else {
+                                log(`   ❌ Element not visible even after trying to open parent`);
+                                return false;
+                            }
+                        } else {
+                            log(`   ❌ Could not find "${currentStep}" at this hierarchy level`);
+                            return false;
+                        }
+                    }
+                    
+                    log(`\n   ✅ [HIERARCHICAL NAVIGATION COMPLETE] Successfully navigated all steps!`);
+                    return true;
+                }
+                
+            } catch (e) {
+                log(`   ⚠️  Hierarchical path handler error: ${(e as any).message}`);
+            }
+
+            // **SPECIAL HANDLER FOR DROPDOWN/SELECT ELEMENTS - ENHANCED FOR NESTED DROPDOWNS**
+            try {
+                // Check if target is a dropdown item - if so, open ALL parent dropdowns first (multi-level support)
                 const allElements = await frame.locator('a, button, [role="button"], [role="option"], [role="menuitem"], li, div[onclick], span').all();
                 
                 let foundElement: any = null;
                 let foundText: string = '';
+                let visibleElements: any[] = [];
+                
+                // IMPORTANT: Find ALL matching elements and filter by visibility
                 for (const el of allElements) {
                     const text = await el.textContent().catch(() => '');
                     if (text.toLowerCase().includes(targetLower)) {
-                        foundElement = el;
-                        foundText = text;
-                        break;
+                        // Check if this element is actually visible on screen
+                        const isVisible = await el.isVisible().catch(() => false);
+                        if (isVisible) {
+                            visibleElements.push({ el, text });
+                        }
+                    }
+                }
+                
+                // If we found visible elements, use the first one (most likely to be the correct one)
+                if (visibleElements.length > 0) {
+                    foundElement = visibleElements[0].el;
+                    foundText = visibleElements[0].text;
+                    log(`   ✓ [VISIBILITY CHECK] Found ${visibleElements.length} visible element(s) matching "${target}"`);
+                } else {
+                    // Fallback: try to find first match regardless of visibility (for later opening)
+                    for (const el of allElements) {
+                        const text = await el.textContent().catch(() => '');
+                        if (text.toLowerCase().includes(targetLower)) {
+                            foundElement = el;
+                            foundText = text;
+                            break;
+                        }
                     }
                 }
                 
@@ -2161,50 +2953,129 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                         const isVisible = await foundElement.isVisible().catch(() => false);
                         
                         if (!isVisible) {
-                            // Try to find and open parent dropdown
-                            const parentDropdown = await foundElement.evaluate((el: any) => {
-                                let current = el;
+                            // NEW: Build complete parent dropdown chain (handles multi-level nesting)
+                            const parentChain = await foundElement.evaluate((el: any) => {
+                                const chain: any[] = [];
+                                let current = el.parentElement;
+                                
                                 while (current && current !== document.documentElement) {
                                     const classList = current.className || '';
+                                    const role = current.getAttribute('role') || '';
+                                    const dataRole = current.getAttribute('data-role') || '';
+                                    
+                                    // Check if this is a dropdown/menu container
                                     const isDropdown = classList.includes('dropdown') || 
                                                      classList.includes('menu') || 
                                                      classList.includes('select') ||
-                                                     current.getAttribute('role') === 'listbox' ||
-                                                     current.getAttribute('data-role') === 'dropdown';
-                                    if (isDropdown) return current;
+                                                     classList.includes('submenu') ||
+                                                     role === 'listbox' ||
+                                                     role === 'menu' ||
+                                                     role === 'menuitem' ||
+                                                     dataRole === 'dropdown';
+                                    
+                                    if (isDropdown) {
+                                        chain.unshift({ 
+                                            element: current, 
+                                            className: classList,
+                                            role: role,
+                                            level: chain.length
+                                        });
+                                    }
+                                    
                                     current = current.parentElement;
                                 }
-                                return null;
+                                
+                                return chain.length > 0 ? chain : null;
                             }).catch(() => null);
                             
-                            if (parentDropdown) {
-                                // Click parent to open dropdown
-                                const parentButton = await frame.locator('button, [role="button"], a').filter({ 
-                                    has: foundElement 
-                                }).first();
+                            if (parentChain && parentChain.length > 0) {
+                                log(`   📋 [DROPDOWN HIERARCHY] Found ${parentChain.length} nested dropdown level(s)`);
                                 
-                                try {
-                                    await parentButton.click({ timeout: 2000 }).catch(() => {
-                                        return parentButton.evaluate((e: any) => e.click());
-                                    });
-                                    await frame.waitForTimeout(300);
-                                } catch (e) {
-                                    // Parent click failed, continue
+                                // Click all parent dropdowns in order (from outermost to innermost)
+                                for (let pcIdx = 0; pcIdx < parentChain.length; pcIdx++) {
+                                    const parentInfo = parentChain[pcIdx];
+                                    log(`   🔓 [Level ${pcIdx + 1}/${parentChain.length}] Opening parent dropdown...`);
+                                    
+                                    try {
+                                        // Use the smart parent trigger finder
+                                        const triggerClicked = await findAndClickParentDropdownTrigger(frame, pcIdx, foundText);
+                                        
+                                        if (triggerClicked) {
+                                            log(`   ✓ Parent dropdown level ${pcIdx + 1} opened successfully`);
+                                        } else {
+                                            // Fallback: Try the previous approach
+                                            try {
+                                                const firstClickable = await frame.locator('button, [role="button"], a').first();
+                                                const visible = await firstClickable.isVisible().catch(() => false);
+                                                if (visible) {
+                                                    await firstClickable.click({ timeout: 2000, force: true }).catch(async () => {
+                                                        await firstClickable.evaluate((e: any) => {
+                                                            if (e.click) e.click();
+                                                            else e.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                                                        });
+                                                    });
+                                                    await frame.waitForTimeout(400);
+                                                    log(`   ✓ Parent dropdown level ${pcIdx + 1} clicked (fallback)`);
+                                                }
+                                            } catch (fallbackErr) {
+                                                log(`   ⚠️  Could not open dropdown level ${pcIdx + 1}, continuing...`);
+                                            }
+                                        }
+                                    } catch (e) {
+                                        log(`   ⚠️  Failed to open dropdown level ${pcIdx + 1}, continuing...`);
+                                    }
                                 }
                             }
                         }
                         
-                        // Now try to click the target element
-                        const visible = await foundElement.isVisible().catch(() => false);
-                        if (visible) {
-                            await foundElement.scrollIntoViewIfNeeded();
-                            await foundElement.click({ timeout: 5000 }).catch(async () => {
-                                await foundElement.evaluate((e: any) => e.click());
-                            });
-                            const truncated = foundText.trim().substring(0, 60) + (foundText.trim().length > 60 ? '...' : '');
-                            log(`✅ Clicked: "${truncated}"`);
-                            await frame.waitForTimeout(500);
-                            return true;
+                        // Now try to click the target element (after all parent dropdowns are open)
+                        // CRITICAL: Make sure we're clicking the VISIBLE one on screen
+                        try {
+                            const visible = await foundElement.isVisible().catch(() => false);
+                            
+                            if (visible) {
+                                // Double-check: Verify element is in viewport
+                                const isInViewport = await foundElement.evaluate((el: any) => {
+                                    const rect = el.getBoundingClientRect();
+                                    return (
+                                        rect.top >= 0 &&
+                                        rect.left >= 0 &&
+                                        rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+                                        rect.right <= (window.innerWidth || document.documentElement.clientWidth)
+                                    );
+                                }).catch(() => false);
+                                
+                                if (!isInViewport) {
+                                    // Not in viewport - scroll it into view
+                                    await foundElement.scrollIntoViewIfNeeded();
+                                    await frame.waitForTimeout(300);
+                                }
+                                
+                                // Now click the visible, on-screen element
+                                const elementLabel = await getCleanElementLabel(foundElement);
+                                const elementInfo = await foundElement.evaluate((el: any) => ({
+                                    tagName: el.tagName,
+                                    className: el.className,
+                                    id: el.id
+                                })).catch(() => ({}));
+                                
+                                log(`   🎯 [CLICKING VISIBLE ELEMENT] Tag: ${elementInfo.tagName}, Text: "${elementLabel}"`);
+                                
+                                await foundElement.click({ timeout: 5000 }).catch(async () => {
+                                    await foundElement.evaluate((e: any) => {
+                                        if (e.click) e.click();
+                                        else e.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                                    });
+                                });
+                                
+                                log(`✅ Clicked: "${elementLabel}"`);
+                                await frame.waitForTimeout(500);
+                                return true;
+                            } else {
+                                log(`   ⚠️  Element found but NOT visible on screen, trying alternatives...`);
+                            }
+                        } catch (e) {
+                            log(`   ⚠️  Error clicking target element: ${(e as any).message}`);
                         }
                     } catch (e) {
                         // Continue to next strategy
@@ -2562,17 +3433,24 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                     }
                     
                     if (isMatch) {
+                        // Show cursor pointer before clicking
+                        await showClickPointerByAttribute(frame, target);
+                        log(`👆 [POINTER] Clicking: "${target}" (cursor shown for 2 seconds...)`);
+                        await frame.waitForTimeout(2000);
+                        
                         // Force click without checking visibility - if it exists in DOM, click it
                         // This handles overlaid/hidden elements
                         try {
                             await btn.click({ force: true, timeout: 5000 }).catch(() => {});
                             log(`✅ [BUTTON${framePath}] Force-clicked: "${target}"`);
+                            await removeClickPointer(frame);
                             return true;
                         } catch (clickError) {
                             // If force click fails, try alternative methods
                             try {
                                 await btn.evaluate((el: any) => el.click());
                                 log(`✅ [BUTTON-JS${framePath}] JavaScript-clicked: "${target}"`);
+                                await removeClickPointer(frame);
                                 return true;
                             } catch (e2) {
                                 // Try dispatchEvent as last resort
@@ -2581,6 +3459,7 @@ async function executeClickInFrame(frame: any, target: string, framePath: string
                                         el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
                                     });
                                     log(`✅ [BUTTON-EVENT${framePath}] Mouse-event-clicked: "${target}"`);
+                                    await removeClickPointer(frame);
                                     return true;
                                 } catch (e3) {
                                     // Continue to next button
@@ -2915,6 +3794,11 @@ async function executeFillInFrame(frame: any, target: string, fillValue: string,
                 
                 if (allAttrs.includes(targetLower)) {
                     try {
+                        // Highlight the input field before filling
+                        const inputId = await input.getAttribute('id').catch(() => '');
+                        const inputName = await input.getAttribute('name').catch(() => '');
+                        const selector = inputId ? `#${inputId}` : (inputName ? `[name="${inputName}"]` : '');
+                        
                         // Force fill without visibility checks
                         await input.click({ force: true }).catch(() => {});
                         await input.fill(fillValue, { timeout: 5000, force: true }).catch(() => {});
@@ -2923,6 +3807,7 @@ async function executeFillInFrame(frame: any, target: string, fillValue: string,
                             el.dispatchEvent(new Event('change', { bubbles: true }));
                             el.dispatchEvent(new Event('blur', { bubbles: true }));
                         }).catch(() => {});
+                        
                         log(`✅ [FORCE-FILL${framePath}] Filled: "${name || id || title}" = "${fillValue}"`);
                         return true;
                     } catch (e: any) {
@@ -2950,13 +3835,20 @@ async function executeFillInFrame(frame: any, target: string, fillValue: string,
                     
                     if (inputEl) {
                         try {
+                            // Highlight the input field before filling
+                            const inputId = await inputEl.getAttribute('id').catch(() => '');
+                            const inputName = await inputEl.getAttribute('name').catch(() => '');
+                            const selector = inputId ? `#${inputId}` : (inputName ? `[name="${inputName}"]` : '');
+                            
                             // Force fill regardless of visibility
                             await inputEl.click({ force: true }).catch(() => {});
                             await inputEl.fill(fillValue, { timeout: 5000, force: true }).catch(() => {});
                             await inputEl.evaluate((el: any) => {
+                                el.dispatchEvent(new Event('input', { bubbles: true }));
                                 el.dispatchEvent(new Event('change', { bubbles: true }));
                                 el.dispatchEvent(new Event('blur', { bubbles: true }));
                             }).catch(() => {});
+                            
                             log(`✅ [LABEL-FILL${framePath}] Filled: "${labelText.trim()}" = "${fillValue}"`);
                             return true;
                         } catch (e: any) {
@@ -4191,6 +5083,132 @@ async function hoverWithRetry(target: string, maxRetries: number = 5): Promise<b
     log(`\n🎯 [HOVER ACTION] Hovering over: "${target}"`);
 
     try {
+        // **HIERARCHICAL PATH SUPPORT FOR HOVER** - e.g., "Loans > Insta Personal Loan"
+        const hasHierarchyMarkers = target.includes('>');
+        if (hasHierarchyMarkers) {
+            const pathSteps = target.split(/\s*>>?\s*/).filter((step: string) => step.trim().length > 0);
+            
+            if (pathSteps.length > 1) {
+                log(`\n📊 [HIERARCHICAL HOVER] Detected nested path with ${pathSteps.length} steps`);
+                log(`📋 Parsing: ${pathSteps.map((s, i) => `Step ${i+1}: "${s}"`).join(' | ')}`);
+                
+                // Click through all steps EXCEPT the final one to open menus/dropdowns
+                for (let stepIdx = 0; stepIdx < pathSteps.length - 1; stepIdx++) {
+                    const currentStep = pathSteps[stepIdx].trim();
+                    const nextStep = pathSteps[stepIdx + 1].trim();
+                    
+                    // CHECK IF NEXT SUBMENU IS ALREADY VISIBLE BEFORE CLICKING
+                    const isNextStepVisible = await state.page?.evaluate(({searchText}) => {
+                        const elements = Array.from(document.querySelectorAll('*'));
+                        for (const el of elements) {
+                            const text = (el.textContent || '').trim();
+                            if (text.toLowerCase().includes(searchText.toLowerCase()) || 
+                                searchText.toLowerCase().includes(text.toLowerCase())) {
+                                const rect = (el as HTMLElement).getBoundingClientRect();
+                                if (rect.height > 0 && rect.width > 0 && rect.top >= 0 && rect.left >= 0) {
+                                    return true; // Element is visible
+                                }
+                            }
+                        }
+                        return false;
+                    }, { searchText: nextStep });
+                    
+                    if (isNextStepVisible) {
+                        log(`\n📍 STEP ${stepIdx + 1}/${pathSteps.length}: Submenu for "${currentStep}" already open (${nextStep} is visible)`);
+                        log(`   ✅ Skipping click - submenu already visible`);
+                        await state.page?.waitForTimeout(200);
+                    } else {
+                        log(`\n📍 STEP ${stepIdx + 1}/${pathSteps.length}: CLICK "${currentStep}" (to open submenu)`);
+                        
+                        // Use clickWithRetry to properly handle the clicks with Playwright
+                        const clickSuccess = await clickWithRetry(currentStep, 3);
+                        
+                        if (!clickSuccess) {
+                            log(`   ⚠️  Click on "${currentStep}" had issues, but continuing...`);
+                            // Continue anyway - the dropdown might still have opened
+                        }
+                        
+                        log(`   ✅ Step ${stepIdx + 1} complete - waiting for submenu...`);
+                        await state.page?.waitForTimeout(500); // Wait for submenu animation
+                    }
+                }
+                
+                // Now hover over the final step
+                const finalStep = pathSteps[pathSteps.length - 1].trim();
+                log(`\n📍 STEP ${pathSteps.length}/${pathSteps.length}: HOVER over "${finalStep}"`);
+                
+                // Try to find and hover the final element using Playwright locators
+                try {
+                    const locator = state.page?.locator(`button:has-text("${finalStep}"), a:has-text("${finalStep}"), li:has-text("${finalStep}"), span:has-text("${finalStep}"), div:has-text("${finalStep}")`);
+                    
+                    if (locator) {
+                        const count = await locator.count().catch(() => 0);
+                        if (count > 0) {
+                            try {
+                                await locator.first().hover({ timeout: 5000 });
+                                log(`   ✅ Successfully hovered over "${finalStep}"`);
+                                log(`\n✅ SUCCESS: Hierarchical hover completed: ${target}`);
+                                return true;
+                            } catch (e) {
+                                log(`   ⚠️  Playwright hover failed, trying DOM method...`);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    log(`   ⚠️  Locator approach failed`);
+                }
+                
+                // Fallback: Use coordinate-based hover
+                const hoverSuccess = await state.page?.evaluate(({searchText}) => {
+                    const allElements = Array.from(document.querySelectorAll('*'));
+                    let bestMatch: {el: HTMLElement, distance: number} | null = null;
+                    
+                    for (const el of allElements) {
+                        const elementText = (el.textContent || '').trim().toLowerCase();
+                        const searchLower = searchText.toLowerCase();
+                        
+                        // Look for close text matches
+                        if (elementText.includes(searchLower) || searchLower.includes(elementText)) {
+                            const rect = (el as HTMLElement).getBoundingClientRect();
+                            if (rect.height > 0 && rect.width > 0 && rect.top < 1000 && rect.left < 2000) {
+                                const distance = Math.abs(elementText.length - searchLower.length);
+                                
+                                if (!bestMatch || distance < bestMatch.distance) {
+                                    bestMatch = {el: el as HTMLElement, distance};
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (bestMatch) {
+                        try {
+                            const event = new MouseEvent('mouseenter', { bubbles: true, cancelable: true });
+                            bestMatch.el.dispatchEvent(event);
+                            
+                            // Also try mouseover
+                            const event2 = new MouseEvent('mouseover', { bubbles: true, cancelable: true });
+                            bestMatch.el.dispatchEvent(event2);
+                            
+                            return true;
+                        } catch (e) {
+                            return false;
+                        }
+                    }
+                    return false;
+                }, { searchText: finalStep });
+                
+                if (hoverSuccess) {
+                    log(`   ✅ Successfully hovered over "${finalStep}" (DOM method)`);
+                    log(`\n✅ SUCCESS: Hierarchical hover completed: ${target}`);
+                    return true;
+                } else {
+                    log(`   ❌ Failed to hover over final step "${finalStep}"`);
+                    return false;
+                }
+            }
+        }
+        
+        // **STANDARD HOVER (non-hierarchical)**
         // Try Playwright's locator API first
         const locator = state.page?.locator(`button:has-text("${target}"), a:has-text("${target}"), li:has-text("${target}"), [role="button"]:has-text("${target}"), [role="menuitem"]:has-text("${target}")`);
         
@@ -4282,6 +5300,138 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
             log(`⚠️ Nested navigation failed, falling back to standard click...`);
         }
     }
+
+    // ===== SPECIAL HANDLER: Click elements by exact text match =====
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`🔎 [NEW DROPDOWN HANDLER] Starting search for: "${target}"`);
+    console.log(`${'='.repeat(60)}`);
+    
+    const dropdownResult = await state.page?.evaluate((targetParam: string) => {
+        const searchTarget = targetParam.toLowerCase().trim();
+        console.log(`🔍 SEARCHING FOR: "${searchTarget}"`);
+        console.log(`✅ NEW HANDLER IS EXECUTING!`);
+        
+        const candidates: any[] = [];
+        
+        // Search only interactive elements
+        const selectors = 'button, a, [role="button"], p, span, li, div[onclick]';
+        const interactiveElements = document.querySelectorAll(selectors);
+        
+        console.log(`   Total interactive elements: ${interactiveElements.length}`);
+        
+        let debugCount = 0;
+        for (const el of Array.from(interactiveElements)) {
+            // Get text multiple ways
+            const fullText = (el.textContent || '').trim();
+            const innerText = ((el as any).innerText || '').trim();
+            const innerHTML = (el as HTMLElement).innerHTML.replace(/<[^>]*>/g, '').trim();
+            
+            const cleanText = fullText.toLowerCase();
+            const cleanInner = innerText.toLowerCase();
+            const cleanHtml = innerHTML.toLowerCase();
+            
+            // Check if ANY extraction method contains search target
+            const isMatch = cleanText.includes(searchTarget) || 
+                            cleanInner.includes(searchTarget) || 
+                            cleanHtml.includes(searchTarget);
+            
+            if (!isMatch) continue;
+            
+            const rect = (el as HTMLElement).getBoundingClientRect();
+            const style = window.getComputedStyle(el as HTMLElement);
+            
+            // Must be visible (display/visibility check)
+            if (style.display === 'none' || style.visibility === 'hidden' || 
+                rect.width === 0 || rect.height === 0) {
+                continue;
+            }
+            
+            // Check if element is in viewport (visible on screen)
+            const isInViewport = rect.top >= 0 && rect.left >= 0 && 
+                                 rect.bottom <= window.innerHeight && 
+                                 rect.right <= window.innerWidth;
+            
+            // Count nesting depth in dropdown structures
+            let dropdownDepth = 0;
+            let parent: any = el.parentElement;
+            for (let i = 0; i < 25; i++) {
+                if (!parent) break;
+                const pClass = (parent.className || '').toLowerCase();
+                if (pClass.includes('dropdown') || pClass.includes('menu') || 
+                    pClass.includes('overlay') || pClass.includes('submenu') ||
+                    pClass.includes('popover')) {
+                    dropdownDepth = i + 1;
+                }
+                parent = parent.parentElement;
+            }
+            
+            debugCount++;
+            if (debugCount <= 15) {
+                console.log(`   Match #${debugCount}: <${(el as HTMLElement).tagName}> viewport=${isInViewport} depth=${dropdownDepth} text="${fullText.substring(0, 40)}"`);
+            }
+            
+            candidates.push({
+                el: el,
+                tag: (el as HTMLElement).tagName,
+                text: fullText.substring(0, 100),
+                dropdownDepth: dropdownDepth,
+                size: rect.width * rect.height,
+                rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) },
+                isInViewport: isInViewport
+            });
+        }
+        
+        console.log(`   ✅ Found ${candidates.length} candidates`);
+        
+        if (candidates.length === 0) {
+            console.log(`   ❌ NO MATCHES FOUND`);
+            return { found: false };
+        }
+        
+        // FIRST: Filter to only VISIBLE/IN-VIEWPORT elements
+        const visibleCandidates = candidates.filter(c => c.isInViewport);
+        console.log(`   📺 Visible in viewport: ${visibleCandidates.length}`);
+        
+        let toClick = visibleCandidates.length > 0 ? visibleCandidates : candidates;
+        
+        // Sort: prefer deeper dropdown nesting, then by size
+        toClick.sort((a, b) => {
+            if (b.dropdownDepth !== a.dropdownDepth) return b.dropdownDepth - a.dropdownDepth;
+            return b.size - a.size;
+        });
+        
+        const selectedElement = toClick[0];
+        console.log(`   ✅ SELECTED: <${selectedElement.tag}> inViewport=${selectedElement.isInViewport} depth=${selectedElement.dropdownDepth} text="${selectedElement.text}" pos=(${selectedElement.rect.x},${selectedElement.rect.y})`);
+        
+        (selectedElement.el as HTMLElement).click();
+        
+        return { 
+            found: true, 
+            tag: selectedElement.tag,
+            text: selectedElement.text,
+            depth: selectedElement.dropdownDepth,
+            inViewport: selectedElement.isInViewport,
+            position: selectedElement.rect
+        };
+    }, target).catch((err) => { 
+        console.log(`   ❌ EVALUATE ERROR: ${err}`);
+        return { found: false };
+    });
+    
+    if (dropdownResult?.found) {
+        log(`\n✅ Successfully clicked element!`);
+        log(`   Tag: <${(dropdownResult as any).tag}>`);
+        log(`   Text: "${(dropdownResult as any).text}"`);
+        log(`   Visible in viewport: ${(dropdownResult as any).inViewport}`);
+        log(`   Dropdown depth: ${(dropdownResult as any).depth}`);
+        log(`   Position: (${(dropdownResult as any).position?.x}, ${(dropdownResult as any).position?.y})`);
+        debugLog(`✅ Element clicked`);
+        await state.page?.waitForTimeout(1000);
+        return true;
+    }
+    
+    console.log(`\n❌ [NEW DROPDOWN HANDLER] Failed to find/click element`);
+    console.log(`   Falling back to old handlers...`);
 
     // ===== PARSE HIERARCHICAL TARGET (e.g., "Loans > Insta Personal Loan") =====
     let parentMenu: string | null = null;
@@ -5981,23 +7131,31 @@ async function detectVisibleDropdowns(): Promise<any[]> {
             const results: any[] = [];
             const seen = new Set<Element>();
 
-            // Selectors for dropdown containers
+            // Selectors for dropdown containers - expanded to catch more patterns
             const dropdownSelectors = [
                 '[role="menu"]',
                 '[role="listbox"]',
                 '[role="combobox"]',
+                '[role="navigation"]',
                 '.dropdown',
                 '.menu',
                 '.select',
                 '[class*="dropdown"]',
                 '[class*="menu"]',
                 '[class*="popup"]',
+                '[class*="submenu"]',
+                '[class*="modal"]',
                 '[data-role="dropdown"]',
                 'ul[class*="dropdown"]',
                 'ul[class*="menu"]',
+                'ul[role]',
                 'div[class*="dropdown-menu"]',
                 '.nav',
-                '[class*="navigation"]'
+                '[class*="navigation"]',
+                // Additional selectors for positioned overlays
+                'div[style*="position: absolute"]',
+                'div[style*="position: fixed"]',
+                'div[class*="overlay"]'
             ];
 
             for (const selector of dropdownSelectors) {
@@ -6065,14 +7223,39 @@ async function detectVisibleDropdowns(): Promise<any[]> {
 }
 
 /**
- * Parse nested target path like "Loans > Insta Personal Loan > Check Offer"
- * Returns array of breadcrumb steps
+ * Parse nested target path like "Loans > Insta Personal Loan >> Check Offer"
+ * Single ">" = new dropdown level (wait for dropdown to open)
+ * Double ">>" = same dropdown level (minimal wait, item already visible)
+ * Returns array with metadata about each step
  */
-function parseNestedPath(target: string): string[] {
-    return target
-        .split('>')
-        .map(step => step.trim())
-        .filter(step => step.length > 0);
+function parseNestedPath(target: string): Array<{ text: string; isNewLevel: boolean }> {
+    // Split by ">>" first (double), then ">" (single)
+    const parts: Array<{ text: string; isNewLevel: boolean }> = [];
+    
+    // Match patterns like "text > text >> text"
+    const regex = /([^>]*?)(?:(>>|>))?(?=>>|>|$)/g;
+    let match;
+    let lastWasSingleArrow = false;
+    
+    const items = target.split(/>>|>/).filter(item => item.trim().length > 0);
+    const separators = target.match(/>>|>/g) || [];
+    
+    for (let i = 0; i < items.length; i++) {
+        const text = items[i].trim();
+        const separator = separators[i]; // ">" or ">>"
+        
+        // First item always searches on page
+        if (i === 0) {
+            parts.push({ text, isNewLevel: true });
+        } else {
+            // isNewLevel = true if separator is ">" (single)
+            // isNewLevel = false if separator is ">>" (double)
+            const isNewLevel = separator === '>' || separator === undefined;
+            parts.push({ text, isNewLevel });
+        }
+    }
+    
+    return parts;
 }
 
 /**
@@ -6087,75 +7270,346 @@ async function handleNestedNavigation(target: string): Promise<boolean> {
     const pathSteps = parseNestedPath(target);
     
     if (pathSteps.length <= 1) {
-        // Not a nested path, use regular click
-        return false;  // Let caller handle with regular click
+        return false;  // Not a nested path
     }
 
-    log(`\n🔄 [NESTED NAVIGATION] Handling hierarchical path: ${pathSteps.join(' → ')}`);
+    log(`\n🔄 [NESTED NAVIGATION] Hierarchical path: ${target}`);
+    log(`\n📊 Parsed ${pathSteps.length} steps:`);
+    
+    for (let i = 0; i < pathSteps.length; i++) {
+        const step = pathSteps[i];
+        const marker = i === 0 ? '(page search)' : step.isNewLevel ? '(new dropdown ">")' : '(same dropdown ">>"" )';
+        log(`   Step ${i + 1}: "${step.text}" ${marker}`);
+    }
 
     try {
         for (let i = 0; i < pathSteps.length; i++) {
             const currentStep = pathSteps[i];
-            const isLastStep = i === pathSteps.length - 1;
+            const isFirstStep = i === 0;
+            const expectsNewLevel = currentStep.isNewLevel;
 
-            log(`\n📍 Step ${i + 1}/${pathSteps.length}: Click "${currentStep}"`);
+            log(`\n${'─'.repeat(70)}`);
+            log(`📍 STEP ${i + 1}/${pathSteps.length}: Click "${currentStep.text}" ${expectsNewLevel && i > 0 ? '[EXPECTS NEW DROPDOWN]' : ''}`);
+            log(`${'─'.repeat(70)}`);
 
-            // STEP 1: Click the current element
             let clickSuccess = false;
-            
-            if (i === 0) {
-                // First click - search entire page
-                clickSuccess = await clickElementInPage(currentStep, state.page!);
-            } else {
-                // Subsequent clicks - search within visible dropdowns
-                const dropdowns = await detectVisibleDropdowns();
+
+            if (isFirstStep) {
+                // STEP 1: Click parent on entire page
+                log(`🔍 Searching entire page for "${currentStep.text}"...`);
+                clickSuccess = await clickElementInPage(currentStep.text, state.page!);
                 
-                if (dropdowns.length === 0) {
-                    log(`⚠️ No visible dropdowns found after clicking "${pathSteps[i-1]}"`);
+                if (clickSuccess) {
+                    log(`✅ Clicked "${currentStep.text}" - dropdown should open`);
+                    log(`⏳ Waiting 400ms for dropdown to appear...`);
+                    await state.page!.waitForTimeout(400);
+                } else {
+                    log(`❌ Failed to click "${currentStep.text}"`);
                     return false;
                 }
-
-                log(`✅ Found ${dropdowns.length} visible dropdown(s), searching within them...`);
-
-                // Search for element within the dropdown items
-                clickSuccess = await clickElementInDropdown(currentStep, dropdowns);
-            }
-
-            if (!clickSuccess) {
-                log(`❌ Failed to click "${currentStep}" at step ${i + 1}`);
-                return false;
-            }
-
-            log(`✅ Clicked "${currentStep}"`);
-
-            if (!isLastStep) {
-                // Wait for next dropdown to open
-                log(`⏳ Waiting for dropdown to expand...`);
-                await state.page!.waitForTimeout(800);
-
-                // Verify dropdown opened
-                const dropsAfter = await detectVisibleDropdowns();
-                if (dropsAfter.length === 0) {
-                    log(`⚠️ Warning: No dropdown visible after clicking "${currentStep}"`);
-                    // Try one more time with extra wait
-                    await state.page!.waitForTimeout(500);
-                    const dropsRetry = await detectVisibleDropdowns();
-                    if (dropsRetry.length > 0) {
-                        log(`✅ Dropdown found after retry`);
+            } else {
+                // STEPS 2+: Can be either dropdown search OR hover-reveal
+                const isLastStep = (i === pathSteps.length - 1);
+                const hasNextStep = (i < pathSteps.length - 1);
+                const nextStep = hasNextStep ? pathSteps[i + 1] : null;
+                
+                // First, detect dropdowns to use in both scenarios
+                log(`🔍 Detecting visible dropdowns...`);
+                let dropdowns = await detectVisibleDropdowns();
+                
+                if (dropdowns.length === 0) {
+                    log(`⚠️ No dropdowns found, retrying...`);
+                    await state.page!.waitForTimeout(300);
+                    dropdowns = await detectVisibleDropdowns();
+                    
+                    if (dropdowns.length === 0) {
+                        log(`❌ No dropdowns found after retry`);
+                        return false;
+                    }
+                }
+                
+                log(`✅ Found ${dropdowns.length} visible dropdown(s)`);
+                for (let d = 0; d < dropdowns.length; d++) {
+                    const dropdown = dropdowns[d];
+                    log(`   Dropdown ${d + 1}: ${dropdown.selector}`);
+                    log(`      Position: ${dropdown.position.top}px top, ${dropdown.position.left}px left`);
+                    log(`      Size: ${dropdown.size.width}x${dropdown.size.height}px`);
+                    log(`      Items in dropdown: ${dropdown.itemCount}`);
+                    const itemList = dropdown.items.slice(0, 8).map((i: any) => i.text).join(' | ');
+                    log(`      Items visible: [${itemList}${dropdown.items.length > 8 ? '...' : ''}]`);
+                }
+                
+                let clickSuccess = false;
+                
+                // Check if NEXT step is a sub-child (preceded by ">>") that needs hover to reveal
+                // nextStep.isNewLevel = false means preceded by ">>", so use hover approach
+                if (hasNextStep && !isLastStep && nextStep && !nextStep.isNewLevel) {
+                    log(`📋 DETECTED HOVER-REVEAL: Next item is sub-child (">>")`);
+                    log(`   Hover over "${currentStep.text}" to reveal "${nextStep!.text}"`);
+                    
+                    // Hover over current item to reveal next item (sub-element like Check Offer button)
+                    clickSuccess = await hoverAndClickSubElement(currentStep.text, nextStep!.text, dropdowns);
+                    
+                    if (clickSuccess) {
+                        log(`✅ Hovered and clicked "${nextStep!.text}" successfully`);
+                        i++;  // Skip next iteration since we already clicked the next item
+                    } else {
+                        log(`⚠️ Hover approach failed, falling back to standard dropdown search for "${currentStep.text}"...`);
+                        clickSuccess = await clickElementInDropdown(currentStep.text, dropdowns);
+                        
+                        if (clickSuccess) {
+                            log(`✅ Clicked "${currentStep.text}" (standard approach)`);
+                            if (expectsNewLevel) {
+                                log(`⏳ Configured for NEW DROPDOWN (">") - waiting 500ms...`);
+                                await state.page!.waitForTimeout(500);
+                            } else {
+                                log(`⏳ Configured for SAME DROPDOWN (">>") - waiting 200ms...`);
+                                await state.page!.waitForTimeout(200);
+                            }
+                        } else {
+                            log(`❌ Failed to click "${currentStep.text}"`);
+                            return false;
+                        }
                     }
                 } else {
-                    const itemsInDropdown = dropsAfter.reduce((sum, d) => sum + d.itemCount, 0);
-                    log(`✅ Dropdown opened with ${itemsInDropdown} visible items`);
+                    // Standard dropdown/list search (no hover required)
+                    clickSuccess = await clickElementInDropdown(currentStep.text, dropdowns);
+                    
+                    if (clickSuccess) {
+                        log(`✅ Clicked "${currentStep.text}"`);
+                        
+                        // ===== WAIT LOGIC BASED ON >> vs > =====
+                        if (i < pathSteps.length - 1) {  // Not last step
+                            if (expectsNewLevel) {
+                                // ">" separator: Next dropdown should open
+                                log(`⏳ Configured for NEW DROPDOWN (">") - waiting 500ms...`);
+                                await state.page!.waitForTimeout(500);
+                            } else {
+                                // ">>" separator: Item is in same dropdown
+                                log(`⏳ Configured for SAME DROPDOWN (">>") - waiting 200ms...`);
+                                await state.page!.waitForTimeout(200);
+                            }
+                        }
+                    } else {
+                        log(`❌ Failed to click "${currentStep.text}"`);
+                        return false;
+                    }
                 }
             }
         }
 
-        log(`\n✅ [NESTED NAVIGATION SUCCESS] Successfully navigated through: ${target}`);
+        log(`\n${'═'.repeat(70)}`);
+        log(`✅ SUCCESS: Navigation completed: ${target}`);
+        log(`${'═'.repeat(70)}\n`);
         return true;
+        
     } catch (e: any) {
-        log(`\n❌ [NESTED NAVIGATION ERROR] ${e.message}`);
+        log(`❌ Navigation error: ${e.message}`);
         return false;
     }
+}
+
+/**
+ * Hover over a menu item within dropdown to reveal sub-buttons, then click the target sub-item
+ * Used for menu items that show action buttons/links on hover (like Insta Personal Loan → Check Offer)
+ */
+async function hoverAndClickSubElement(parentText: string, childText: string, dropdowns: any[]): Promise<boolean> {
+    if (!state.page) return false;
+    
+    try {
+        log(`\n   🎯 Using HOVER approach for "${parentText}" → "${childText}"`);
+        
+        const lower = parentText.toLowerCase().trim();
+        const childLower = childText.toLowerCase().trim();
+        
+        // Step 1: Find parent element WITHIN the dropdown containers
+        log(`   🔍 Finding "${parentText}" within dropdowns...`);
+        
+        const parentElement = await state.page.evaluate((searchParams: any) => {
+            const { searchText, dropdownSelectors } = searchParams;
+            const lower = searchText.toLowerCase().trim();
+            
+            // Search within dropdown containers
+            for (const selector of dropdownSelectors) {
+                try {
+                    const containers = document.querySelectorAll(selector);
+                    for (const container of Array.from(containers)) {
+                        const items = container.querySelectorAll('a, button, [role="option"], [role="menuitem"], li, span[onclick], div[onclick]');
+                        
+                        for (const el of Array.from(items) as Element[]) {
+                            const elText = (el.textContent || '').trim().toLowerCase();
+                            const rect = el.getBoundingClientRect();
+                            
+                            // Check visibility
+                            const style = window.getComputedStyle(el);
+                            if (style.display === 'none' || style.visibility === 'hidden') continue;
+                            if (rect.height === 0 || rect.width === 0) continue;
+                            
+                            // Match
+                            if (elText === lower || elText.includes(lower)) {
+                                return {
+                                    text: elText,
+                                    x: Math.round(rect.left + rect.width / 2),
+                                    y: Math.round(rect.top + rect.height / 2),
+                                    tag: (el as any).tagName,
+                                    selector: getElementSelector(el)
+                                };
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+            return null;
+        }, { searchText: parentText, dropdownSelectors: dropdowns.map((d: any) => d.selector) });
+        
+        if (!parentElement) {
+            log(`   ❌ Could not find parent "${parentText}" in dropdowns`);
+            return false;
+        }
+        
+        log(`   ✅ Found parent "${parentText}" at (${parentElement.x}, ${parentElement.y})`);
+        log(`   🖱️  Hovering over "${parentText}"...`);
+        
+        // Step 2: Move mouse to parent element (hover)
+        await state.page.mouse.move(parentElement.x, parentElement.y);
+        
+        // Step 3: Wait for animations/reveal (500ms for button to appear)
+        log(`   ⏳ Waiting 500ms for sub-buttons to appear...`);
+        await state.page.waitForTimeout(500);
+        
+        // Step 4: Find and click child element using BOTH approaches
+        log(`   🔍 Finding "${childText}" near "${parentText}"...`);
+        
+        const childElement = await state.page.evaluate((searchParams: any) => {
+            const { searchText, dropdownSelectors } = searchParams;
+            const lower = searchText.toLowerCase().trim();
+            let bestMatch: any = null;
+            let bestMatchLength = Infinity;
+            
+            // Search within all dropdowns (button might be in overlay or same container)
+            for (const selector of dropdownSelectors) {
+                try {
+                    const containers = document.querySelectorAll(selector);
+                    for (const container of Array.from(containers)) {
+                        const items = container.querySelectorAll('button, a, [role="option"], [role="menuitem"], li, span, div');
+                        
+                        for (const el of Array.from(items) as Element[]) {
+                            const elText = (el.textContent || '').trim().toLowerCase();
+                            const rect = el.getBoundingClientRect();
+                            
+                            // Check visibility
+                            const style = window.getComputedStyle(el);
+                            if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) < 0.1) continue;
+                            if (rect.height === 0 || rect.width === 0) continue;
+                            
+                            // EXACT match
+                            if (elText === lower) {
+                                return {
+                                    text: elText,
+                                    x: Math.round(rect.left + rect.width / 2),
+                                    y: Math.round(rect.top + rect.height / 2),
+                                    tag: (el as any).tagName,
+                                    matchType: 'EXACT',
+                                    selector: getElementSelector(el)
+                                };
+                            }
+                            
+                            // Partial match fallback
+                            if (elText.includes(lower) && lower.length > 2) {
+                                if (elText.length < bestMatchLength) {
+                                    bestMatch = {
+                                        text: elText,
+                                        x: Math.round(rect.left + rect.width / 2),
+                                        y: Math.round(rect.top + rect.height / 2),
+                                        tag: (el as any).tagName,
+                                        matchType: 'PARTIAL',
+                                        selector: getElementSelector(el)
+                                    };
+                                    bestMatchLength = elText.length;
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+            return bestMatch;
+        }, { searchText: childText, dropdownSelectors: dropdowns.map((d: any) => d.selector) });
+        
+        if (!childElement) {
+            log(`   ⚠️  Could not find child element "${childText}" after hover`);
+            return false;
+        }
+        
+        log(`   ✅ Found sub-element "${childText}" at (${childElement.x}, ${childElement.y})`);
+        log(`   🖱️  Clicking "${childText}" using Playwright native click...`);
+        
+        // Step 5: Click using multiple strategies
+        let clickSuccess = false;
+        
+        // Strategy 1: Try Playwright's native click method (most reliable)
+        try {
+            // Search for button/link containing the text
+            const selector = `button:has-text("${childText.replace(/"/g, '\\"')}"), a:has-text("${childText.replace(/"/g, '\\"')}"), [role="button"]:has-text("${childText.replace(/"/g, '\\"')}")`;
+            await state.page.click(selector, { timeout: 2000 });
+            log(`   ✅ Successfully clicked using Playwright selector`);
+            clickSuccess = true;
+        } catch (e) {
+            log(`   ⚠️  Playwright selector click failed, trying mouse approach...`);
+            
+            // Strategy 2: Direct position-based click
+            try {
+                // Move to child first to keep hover state, then click
+                await state.page.mouse.move(childElement.x, childElement.y);
+                await state.page.waitForTimeout(100);  // Brief pause
+                await state.page.mouse.click(childElement.x, childElement.y);
+                log(`   ✅ Successfully clicked using mouse position`);
+                clickSuccess = true;
+            } catch (e2) {
+                log(`   ⚠️  Mouse click also failed: ${e2}`);
+            }
+        }
+        
+        if (clickSuccess) {
+            log(`   ✅ Successfully clicked "${childText}" via hover approach`);
+            return true;
+        } else {
+            return false;
+        }
+        
+    } catch (e: any) {
+        log(`   ❌ Hover approach failed: ${e.message}`);
+        return false;
+    }
+}
+
+/**
+ * Helper function to get unique selector for an element
+ */
+function getElementSelector(element: Element): string {
+    if (!element) return '';
+    
+    const path = [];
+    let el: Element | null = element;
+    
+    while (el && el.nodeType === Node.ELEMENT_NODE) {
+        let index = 0;
+        let sibling = el.previousElementSibling;
+        
+        while (sibling) {
+            if (sibling.nodeName.toLowerCase() === el.nodeName.toLowerCase()) {
+                index++;
+            }
+            sibling = sibling.previousElementSibling;
+        }
+        
+        const tagName = el.nodeName.toLowerCase();
+        const selector = index > 0 ? `${tagName}:nth-of-type(${index + 1})` : tagName;
+        path.unshift(selector);
+        
+        el = el.parentElement;
+    }
+    
+    return path.join(' > ');
 }
 
 /**
@@ -6188,7 +7642,8 @@ async function clickElementInPage(text: string, page: Page): Promise<boolean> {
                     bestMatch = {
                         text: elText,
                         x: Math.round(rect.left + rect.width / 2),
-                        y: Math.round(rect.top + rect.height / 2)
+                        y: Math.round(rect.top + rect.height / 2),
+                        element: el
                     };
                     break;
                 } 
@@ -6197,22 +7652,29 @@ async function clickElementInPage(text: string, page: Page): Promise<boolean> {
                     bestMatch = {
                         text: elText,
                         x: Math.round(rect.left + rect.width / 2),
-                        y: Math.round(rect.top + rect.height / 2)
+                        y: Math.round(rect.top + rect.height / 2),
+                        element: el
                     };
                     bestMatchLength = elText.length;
                 }
             }
             
-            return bestMatch;
+            return bestMatch ? {text: bestMatch.text, x: bestMatch.x, y: bestMatch.y} : null;
         }, text);
 
         if (!foundElement) {
             return false;
         }
 
-        // Click using Playwright mouse - most reliable
-        await page.mouse.click(foundElement.x, foundElement.y);
-        return true;
+        // Use Playwright's native click which is more reliable for web components
+        try {
+            await page.click(`button:has-text("${text}"), a:has-text("${text}"), [role="button"]:has-text("${text}")`);
+            return true;
+        } catch {
+            // Fallback to mouse click if selector fails
+            await page.mouse.click(foundElement.x, foundElement.y);
+            return true;
+        }
     } catch (e) {
         return false;
     }
@@ -6228,18 +7690,47 @@ async function clickElementInDropdown(text: string, dropdowns: any[]): Promise<b
     try {
         const lower = text.toLowerCase();
         
-        log(`   🔍 Searching for "${text}" on entire page (any dropdown or element)...`);
+        log(`   🔍 Searching for "${text}" WITHIN ${dropdowns.length} visible dropdown(s)...`);
 
-        // Simple strategy: Find element with matching text anywhere on page and click it using Playwright
-        const foundElement = await state.page!.evaluate((searchText: string) => {
+        // Search ONLY within visible dropdown containers
+        const foundElement = await state.page!.evaluate((searchParams: any) => {
+            const { searchText, dropdownSelectors } = searchParams;
             const lower = searchText.toLowerCase().trim();
             let bestMatch: any = null;
             let bestMatchLength = Infinity;
+            let dropdownSearchLog: string[] = [];
 
-            // Search all elements
-            const allElements = document.querySelectorAll('*');
+            // First, collect all elements that are within the visible dropdowns
+            let dropdownElements: Element[] = [];
             
-            for (const el of Array.from(allElements)) {
+            for (const selector of dropdownSelectors) {
+                try {
+                    const dropdownContainers = document.querySelectorAll(selector);
+                    dropdownSearchLog.push(`Searching selector: "${selector}" → Found ${dropdownContainers.length} container(s)`);
+                    
+                    for (const container of Array.from(dropdownContainers)) {
+                        const itemsInThis = container.querySelectorAll('a, button, [role="option"], [role="menuitem"], li, span[onclick], div[onclick]');
+                        dropdownElements.push(...Array.from(itemsInThis as NodeListOf<Element>));
+                        dropdownSearchLog.push(`  └─ Container has ${itemsInThis.length} clickable items`);
+                    }
+                } catch (e) {
+                    dropdownSearchLog.push(`Failed to query "${selector}": ${e}`);
+                }
+            }
+
+            if (dropdownElements.length === 0) {
+                return {
+                    found: false,
+                    searchLog: dropdownSearchLog,
+                    message: `No clickable elements found in dropdowns`
+                };
+            }
+
+            dropdownSearchLog.push(`Total clickable elements in dropdowns: ${dropdownElements.length}`);
+
+            // Now search ONLY within dropdown elements
+            // PASS 1: EXACT match only (most strict)
+            for (const el of dropdownElements) {
                 const elText = (el.textContent || '').trim().toLowerCase();
                 const rect = el.getBoundingClientRect();
                 
@@ -6252,53 +7743,105 @@ async function clickElementInDropdown(text: string, dropdowns: any[]): Promise<b
                 
                 if (!isVisible) continue;
 
-                // Exact match - prioritize clickable elements (a, button, etc.)
+                // EXACT match ONLY - no partial matches in this pass
                 if (elText === lower) {
-                    const isClickable = ['A', 'BUTTON', 'LI', 'SPAN', 'DIV'].includes(el.tagName) ||
-                                       el.getAttribute('role')?.includes('button') ||
-                                       el.getAttribute('role')?.includes('menuitem') ||
-                                       el.getAttribute('onclick') !== null;
+                    // Additional validation: ensure text is DIRECT child text, not deeply nested
+                    const directText = Array.from(el.childNodes)
+                        .filter(node => node.nodeType === Node.TEXT_NODE)
+                        .map(node => (node.textContent || '').trim())
+                        .join(' ')
+                        .toLowerCase();
                     
-                    if (isClickable) {
+                    // Also check if it's a simple clickable element (a, button, li, etc.)
+                    const isSimpleClickable = ['A', 'BUTTON', 'LI', 'SPAN'].includes(el.tagName);
+                    
+                    bestMatch = {
+                        text: elText,
+                        directText: directText,
+                        x: Math.round(rect.left + rect.width / 2),
+                        y: Math.round(rect.top + rect.height / 2),
+                        tag: el.tagName,
+                        role: el.getAttribute('role'),
+                        id: el.id,
+                        class: el.className,
+                        isExact: true,
+                        isSimpleClickable: isSimpleClickable,
+                        searchLog: dropdownSearchLog
+                    };
+                    dropdownSearchLog.push(`✅ EXACT MATCH - Tag: ${el.tagName}, Text: "${elText.substring(0, 50)}"`);
+                    break;  // Found exact match, STOP immediately
+                }
+            }
+
+            // PASS 2: If no exact match, try partial match (but only if exact fails)
+            if (!bestMatch) {
+                dropdownSearchLog.push(`⚠️  No exact match found, trying partial match...`);
+                
+                for (const el of dropdownElements) {
+                    const elText = (el.textContent || '').trim().toLowerCase();
+                    const rect = el.getBoundingClientRect();
+                    
+                    const style = window.getComputedStyle(el);
+                    const isVisible = style.display !== 'none' && 
+                                    style.visibility !== 'hidden' &&
+                                    parseFloat(style.opacity) > 0.1 &&
+                                    rect.height > 0 && rect.width > 0;
+                    
+                    if (!isVisible) continue;
+
+                    // Partial match - keep shortest match
+                    if (elText.includes(lower) && elText.length < bestMatchLength) {
                         bestMatch = {
                             text: elText,
                             x: Math.round(rect.left + rect.width / 2),
                             y: Math.round(rect.top + rect.height / 2),
                             tag: el.tagName,
-                            isExact: true
+                            role: el.getAttribute('role'),
+                            id: el.id,
+                            class: el.className,
+                            isExact: false,
+                            searchLog: dropdownSearchLog
                         };
-                        break;  // Found exact match, stop
+                        bestMatchLength = elText.length;
+                        dropdownSearchLog.push(`ℹ️  Partial match: Tag=${el.tagName}, Text="${elText.substring(0, 50)}", Length=${elText.length}`);
                     }
-                }
-                // Partial match - keep shortest match
-                else if (elText.includes(lower) && elText.length < bestMatchLength) {
-                    const rect2 = el.getBoundingClientRect();
-                    bestMatch = {
-                        text: elText,
-                        x: Math.round(rect2.left + rect2.width / 2),
-                        y: Math.round(rect2.top + rect2.height / 2),
-                        tag: el.tagName,
-                        isExact: false
-                    };
-                    bestMatchLength = elText.length;
                 }
             }
 
-            return bestMatch;
-        }, text);
+            return bestMatch || { found: false, searchLog: dropdownSearchLog, message: `No match for "${searchText}" in dropdown elements` };
+        }, {
+            searchText: text,
+            dropdownSelectors: dropdowns.map(d => d.selector)
+        });
 
-        if (!foundElement) {
-            log(`   ❌ Could not find element with text "${text}" on page`);
-            return false;
+        // Log search details
+        if (foundElement.searchLog) {
+            for (const logLine of foundElement.searchLog) {
+                log(`   ${logLine}`);
+            }
         }
 
-        log(`   ✅ Found element: "${foundElement.text.substring(0, 60)}" (${foundElement.tag}) at (${foundElement.x}, ${foundElement.y})`);
+        if (!foundElement || !foundElement.x) {
+            log(`   ❌ Could not find exact/partial match for "${text}" within dropdown elements`);
+            log(`   ℹ️  The element may not be visible in the dropdown yet or text doesn't match`);
+            return false;  // Don't fall back to page search - let caller retry
+        }
+
+        log(`   ✅ Found element:`);
+        log(`      Tag: ${foundElement.tag}`);
+        log(`      Role: ${foundElement.role || 'none'}`);
+        log(`      ID: ${foundElement.id || 'none'}`);
+        log(`      Class: ${foundElement.class || 'none'}`);
+        log(`      Text: "${foundElement.text.substring(0, 80)}"`);
+        log(`      Position: (${foundElement.x}, ${foundElement.y})`);
+        log(`      Exact Match: ${foundElement.isExact ? 'YES' : 'NO'}`);
+        
         log(`   🖱️  Clicking at coordinates (${foundElement.x}, ${foundElement.y})...`);
 
         // Click using Playwright at the exact coordinates - most reliable method
         try {
             await state.page!.mouse.click(foundElement.x, foundElement.y);
-            log(`   ✅ Successfully clicked element`);
+            log(`   ✅ Successfully clicked element in dropdown`);
             return true;
         } catch (e) {
             log(`   ⚠️ Mouse click failed, trying alternative method...`);
