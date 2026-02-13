@@ -6661,43 +6661,18 @@ async function clickWithRetry(target, maxRetries = 5) {
             log(`      └─ Target Item: "${actualTarget}"`);
         }
     }
-    // ===== SPECIAL HANDLING FOR OK BUTTON: Direct ifrSubScreen search =====
-    // The Ok button is typically in the Account Number Generation dialog (ifrSubScreen)
-    if (actualTarget.trim().toLowerCase() === 'ok') {
-        log(`   🔴 [OK-BUTTON-SPECIAL-HANDLER] Searching for Ok button with PRIORITY targeting ifrSubScreen`);
-        // Try direct ifrSubScreen access first
-        try {
-            const ifrSubScreenLocator = state.page?.frameLocator('iframe[id="ifrSubScreen"]');
-            if (ifrSubScreenLocator) {
-                log(`   📍 Found ifrSubScreen iframe - searching for Ok button inside it`);
-                // Look for Ok button with various selectors in ifrSubScreen
-                const okButton = ifrSubScreenLocator.locator('input[id="BTN_OK"], input[name="BTN_OK"], button[name="BTN_OK"], input[value="OK"]').first();
-                const isVisible = await okButton.isVisible().catch(() => false);
-                if (isVisible) {
-                    log(`   ✅ [OK-BUTTON-DIRECT] Found Ok button in ifrSubScreen!`);
-                    await okButton.click({ timeout: 3000, force: true });
-                    log(`   ✅ [OK-BUTTON-DIRECT] Successfully clicked!`);
-                    return true;
-                }
-                else {
-                    log(`   ⚠️  [OK-BUTTON-DIRECT] Ok button not visible in ifrSubScreen`);
-                }
-            }
-        }
-        catch (e) {
-            log(`   ⚠️  [OK-BUTTON-DIRECT] Error accessing ifrSubScreen: ${e.message}`);
-        }
-        // Fallback: Use PRIORITY 0 search for Ok button
-        log(`   📍 Falling back to PRIORITY 0 search for Ok button`);
-        const okFoundWithPriority = await searchInAllSubwindows(actualTarget, 'click');
-        if (okFoundWithPriority) {
-            log(`   ✅ [OK-BUTTON-PRIORITY-0] Successfully clicked Ok in prioritized iframe!`);
-            return true;
-        }
-        log(`   ⚠️  [OK-BUTTON-PRIORITY-0] Not found in prioritized search, trying general search...`);
+    // ===== UNIVERSAL SEARCH: PRIORITY 0 for newly detected iframes =====
+    // This search strategy automatically handles ANY element in ANY newly detected iframe
+    // NEW iframes are searched FIRST before other windows/frames
+    log(`   🔍 [UNIVERSAL-CLICK] Searching for "${actualTarget}" with PRIORITY on newly detected iframes...`);
+    const foundWithPriority = await searchInAllSubwindows(actualTarget, 'click');
+    if (foundWithPriority) {
+        log(`   ✅ [UNIVERSAL-CLICK] Successfully found and clicked "${actualTarget}"`);
+        return true;
     }
-    // ===== SIMPLE DIRECT SEARCH: No dropdown logic, just find and click =====
-    log(`   ⚡ Attempting to find and click element...`);
+    log(`   ⚠️  [UNIVERSAL-CLICK] Not found in priority search, trying general frame search...`);
+    // ===== FALLBACK: General frame search =====
+    log(`   ⚡ Attempting to find and click element in all frames...`);
     const mainPageResult = await searchInAllFrames(actualTarget, 'click');
     if (mainPageResult) {
         log(`   ✅ Element found and clicked`);
@@ -6707,31 +6682,6 @@ async function clickWithRetry(target, maxRetries = 5) {
     const advancedResult = await advancedElementSearch(actualTarget, 'click', undefined, 2);
     if (advancedResult) {
         return true;
-    }
-    // Search subwindows with equal priority
-    if (allPages.length > 1 && latestSubwindow && !latestSubwindow.isClosed()) {
-        try {
-            const foundInPriorityWindow = await searchInAllSubwindows(actualTarget, 'click');
-            if (foundInPriorityWindow) {
-                log(`✅ Successfully clicked in subwindow!`);
-                return true;
-            }
-        }
-        catch (e) {
-            log(`Subwindow search failed, continuing...`);
-        }
-    }
-    if (allPages.length > 1 && latestSubwindow && !latestSubwindow.isClosed()) {
-        try {
-            const foundInPriorityWindow = await searchInAllSubwindows(actualTarget, 'click');
-            if (foundInPriorityWindow) {
-                log(`✅ Successfully clicked in subwindow!`);
-                return true;
-            }
-        }
-        catch (e) {
-            log(`Subwindow search failed, continuing...`);
-        }
     }
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         // Check pause at start of each retry attempt
@@ -7517,29 +7467,26 @@ async function fillWithRetry(target, value, maxRetries = 5) {
     // FIRST: Ensure page is fully loaded before attempting to find elements
     await waitForPageReady();
     log(`\n🔽 [FILL-REQUEST] Attempting to fill: "${target}" = "${value}"`);
-    // Search all windows/frames/iframes
-    log(`\n🔍 Searching for field: "${target}"`);
+    // ===== UNIVERSAL SEARCH: PRIORITY 0 for newly detected iframes =====
+    // Automatically searches ANY newly detected iframe FIRST before other windows/frames
+    // Works for ANY element in ANY iframe, not hardcoded for specific elements
+    log(`\n🔍 Searching for field: "${target}" with PRIORITY on newly detected iframes`);
+    const foundWithPriority = await searchInAllSubwindows(target, 'fill', value);
+    if (foundWithPriority) {
+        log(`   ✅ [UNIVERSAL-FILL] Successfully filled in prioritized iframe!`);
+        return true;
+    }
+    log(`   ⚠️  [UNIVERSAL-FILL] Not found in priority search, trying general search...`);
+    // ===== FALLBACK: General frame search =====
     const mainPageResult = await searchInAllFrames(target, 'fill', value);
     if (mainPageResult) {
+        log(`   ✅ Field filled via general search`);
         return true;
     }
     // Try advanced fallback search
     const advancedResult = await advancedElementSearch(target, 'fill', value, 2);
     if (advancedResult) {
         return true;
-    }
-    // Search subwindows
-    if (allPages.length > 1 && latestSubwindow && !latestSubwindow.isClosed()) {
-        try {
-            const foundInPriorityWindow = await searchInAllSubwindows(target, 'fill', value);
-            if (foundInPriorityWindow) {
-                log(`✅ Successfully filled in subwindow!`);
-                return true;
-            }
-        }
-        catch (e) {
-            log(`Subwindow search failed`);
-        }
     }
     return false;
 }
