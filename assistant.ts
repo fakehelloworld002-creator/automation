@@ -7248,29 +7248,53 @@ async function clickWithRetry(target: string, maxRetries: number = 5): Promise<b
     }
 
     // ===== UNIVERSAL SEARCH: PRIORITY 0 for newly detected iframes =====
-    // This search strategy automatically handles ANY element in ANY newly detected iframe
-    // NEW iframes are searched FIRST before other windows/frames
-    log(`   🔍 [UNIVERSAL-CLICK] Searching for "${actualTarget}" with PRIORITY on newly detected iframes...`);
+    // Strategy: Search BOTH current page frames AND other windows with NEW iframe priority
+    log(`   🔍 [UNIVERSAL-CLICK] Searching for "${actualTarget}"...`);
     
-    const foundWithPriority = await searchInAllSubwindows(actualTarget, 'click');
-    if (foundWithPriority) {
-        log(`   ✅ [UNIVERSAL-CLICK] Successfully found and clicked "${actualTarget}"`);
-        return true;
+    // STEP 1: Check if there's a newly detected iframe on current page (PRIORITY 0)
+    if (latestDetectedNewFrame && Date.now() - latestDetectedNewFrame.detectedAt < 30000) {
+        log(`   ⭐ [PRIORITY-0-NEW-IFRAME] New iframe detected: "${latestDetectedNewFrame.name || latestDetectedNewFrame.id}"`);
+        
+        // Try PRIORITY 0 search first (new iframe search via searchInAllSubwindows)
+        const foundWithPriority = await searchInAllSubwindows(actualTarget, 'click');
+        if (foundWithPriority) {
+            log(`   ✅ [PRIORITY-0] Found and clicked in NEW iframe!`);
+            return true;
+        }
+        log(`   ⚠️  [PRIORITY-0] Not found in new iframe, searching other locations...`);
     }
-    log(`   ⚠️  [UNIVERSAL-CLICK] Not found in priority search, trying general frame search...`);
-
-    // ===== FALLBACK: General frame search =====
-    log(`   ⚡ Attempting to find and click element in all frames...`);
+    
+    // STEP 2: Search current page frames (always search - handles Customer Accounts Maintenance, etc)
+    log(`   🔍 Searching current page frames...`);
     const mainPageResult = await searchInAllFrames(actualTarget, 'click');
     if (mainPageResult) {
-        log(`   ✅ Element found and clicked`);
+        log(`   ✅ Element found and clicked in main page frames`);
         return true;
     }
     
-    // Try advanced fallback search if main search failed
+    // STEP 3: Try advanced fallback search 
     const advancedResult = await advancedElementSearch(actualTarget, 'click', undefined, 2);
     if (advancedResult) {
         return true;
+    }
+    
+    // STEP 4: Search other windows (if any exist)
+    if (allPages.length > 1) {
+        log(`   🔍 Searching other windows...`);
+        for (let wIdx = 1; wIdx < allPages.length; wIdx++) {
+            const page = allPages[wIdx];
+            if (page.isClosed()) continue;
+            
+            try {
+                const result = await searchInAllFrames(actualTarget, 'click');
+                if (result) {
+                    log(`   ✅ Found and clicked in window ${wIdx}`);
+                    return true;
+                }
+            } catch (e) {
+                // Continue
+            }
+        }
     }
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -8133,28 +8157,53 @@ async function fillWithRetry(target: string, value: string, maxRetries: number =
     log(`\n🔽 [FILL-REQUEST] Attempting to fill: "${target}" = "${value}"`);
 
     // ===== UNIVERSAL SEARCH: PRIORITY 0 for newly detected iframes =====
-    // Automatically searches ANY newly detected iframe FIRST before other windows/frames
-    // Works for ANY element in ANY iframe, not hardcoded for specific elements
+    // Strategy: Search BOTH current page frames AND other windows with NEW iframe priority
     log(`\n🔍 Searching for field: "${target}" with PRIORITY on newly detected iframes`);
     
-    const foundWithPriority = await searchInAllSubwindows(target, 'fill', value);
-    if (foundWithPriority) {
-        log(`   ✅ [UNIVERSAL-FILL] Successfully filled in prioritized iframe!`);
-        return true;
+    // STEP 1: Check if there's a newly detected iframe on current page (PRIORITY 0)
+    if (latestDetectedNewFrame && Date.now() - latestDetectedNewFrame.detectedAt < 30000) {
+        log(`   ⭐ [PRIORITY-0-NEW-IFRAME] New iframe detected: "${latestDetectedNewFrame.name || latestDetectedNewFrame.id}"`);
+        
+        // Try PRIORITY 0 search first (new iframe search)
+        const foundWithPriority = await searchInAllSubwindows(target, 'fill', value);
+        if (foundWithPriority) {
+            log(`   ✅ [PRIORITY-0] Found and filled in NEW iframe!`);
+            return true;
+        }
+        log(`   ⚠️  [PRIORITY-0] Not found in new iframe, searching other locations...`);
     }
-    log(`   ⚠️  [UNIVERSAL-FILL] Not found in priority search, trying general search...`);
-
-    // ===== FALLBACK: General frame search =====
+    
+    // STEP 2: Search current page frames (always search - handles Customer Accounts Maintenance, etc)
+    log(`   🔍 Searching current page frames...`);
     const mainPageResult = await searchInAllFrames(target, 'fill', value);
     if (mainPageResult) {
-        log(`   ✅ Field filled via general search`);
+        log(`   ✅ Field found and filled in main page frames`);
         return true;
     }
 
-    // Try advanced fallback search
+    // STEP 3: Try advanced fallback search
     const advancedResult = await advancedElementSearch(target, 'fill', value, 2);
     if (advancedResult) {
         return true;
+    }
+    
+    // STEP 4: Search other windows (if any exist)
+    if (allPages.length > 1) {
+        log(`   🔍 Searching other windows...`);
+        for (let wIdx = 1; wIdx < allPages.length; wIdx++) {
+            const page = allPages[wIdx];
+            if (page.isClosed()) continue;
+            
+            try {
+                const result = await searchInAllFrames(target, 'fill', value);
+                if (result) {
+                    log(`   ✅ Found and filled in window ${wIdx}`);
+                    return true;
+                }
+            } catch (e) {
+                // Continue
+            }
+        }
     }
 
     return false;
