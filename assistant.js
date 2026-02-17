@@ -259,6 +259,414 @@ async function activateNestedTab(frame, tabName) {
         return false;
     }
 }
+/* ============== UNIVERSAL IFRAME DETECTION & HANDLING ============== */
+let allDetectedIframes = new Map(); // Track all detected iframes: "name/id" → { metadata }
+let iframeSnapshotBefore = new Map(); // Previous state to detect NEW iframes
+let latestIframe = null; // Track the NEWEST iframe opened
+let iframeCreationTimestamps = new Map(); // Track when each iframe was first detected: "iframe_id" → timestamp
+/**
+ * DETECT ALL IFRAMES - Universal iframe discovery (finds ALL iframes on page, not just specific ones)
+ * Returns detailed metadata about each iframe
+ */
+async function detectAllIframes(page, windowPath = 'MAIN_PAGE') {
+    try {
+        const iframeData = await page.evaluate(() => {
+            const iframes = Array.from(document.querySelectorAll('iframe'));
+            const results = [];
+            iframes.forEach((iframe, idx) => {
+                try {
+                    const style = window.getComputedStyle(iframe);
+                    const rect = iframe.getBoundingClientRect();
+                    const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+                    // Get iframe identifier (in priority order)
+                    const iframeId = iframe.id || `iframe_${idx}`;
+                    const iframeName = iframe.name || iframe.getAttribute('data-name') || 'unnamed';
+                    const iframeClass = iframe.className;
+                    const iframeTitle = iframe.title;
+                    const iframeSrc = iframe.src;
+                    const iframeDataAttrs = Array.from(iframe.attributes)
+                        .filter(attr => attr.name.startsWith('data-'))
+                        .reduce((obj, attr) => ({ ...obj, [attr.name]: attr.value }), {});
+                    results.push({
+                        index: idx,
+                        id: iframeId,
+                        name: iframeName,
+                        className: iframeClass,
+                        title: iframeTitle,
+                        src: iframeSrc,
+                        dataAttributes: iframeDataAttrs,
+                        isVisible: isVisible,
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height),
+                        position: { x: Math.round(rect.x), y: Math.round(rect.y) },
+                        role: iframe.getAttribute('role'),
+                        ariaLabel: iframe.getAttribute('aria-label'),
+                        ariaDescribedBy: iframe.getAttribute('aria-describedby'),
+                        sandbox: iframe.getAttribute('sandbox'),
+                        scrolling: iframe.getAttribute('scrolling'),
+                        frameBorder: iframe.getAttribute('frameborder'),
+                        allow: iframe.getAttribute('allow'),
+                        loading: iframe.getAttribute('loading'),
+                        tagName: 'IFRAME',
+                        hash: `${iframeId}_${iframeName}` // Unique identifier
+                    });
+                }
+                catch (ifrErr) {
+                    // Skip problematic iframes
+                }
+            });
+            return results;
+        }).catch(() => []);
+        // Convert to Map
+        const iframeMap = new Map();
+        iframeData.forEach((iframe) => {
+            const key = iframe.id || iframe.name;
+            iframeMap.set(key, iframe);
+        });
+        return iframeMap;
+    }
+    catch (error) {
+        log(`   ⚠️  [IFRAME DETECTION] Error: ${error.message}`);
+        return new Map();
+    }
+}
+/**
+ * LOG IFRAME METADATA - Display detected iframe information
+ */
+function logIframeMetadata(iframes, isNewDetection = false) {
+    if (iframes.size === 0) {
+        log(`   ℹ️  No iframes detected on this page`);
+        return;
+    }
+    const label = isNewDetection ? '🆕 NEW IFRAMES DETECTED' : '📦 DETECTED IFRAMES';
+    log(`\n   ${label} - Found ${iframes.size} iframe(s):`);
+    let idx = 1;
+    iframes.forEach((iframe) => {
+        const visibility = iframe.isVisible ? '✅ VISIBLE' : '⚠️ HIDDEN';
+        const sizeStr = `${iframe.width}x${iframe.height}px @ (${iframe.position.x}, ${iframe.position.y})`;
+        const nameStr = iframe.id || iframe.name || 'unnamed';
+        log(`\n      ┌─ [${idx}] IFRAME IDENTITY`);
+        log(`      │   ID: "${iframe.id}"`);
+        log(`      │   Name: "${iframe.name}"`);
+        log(`      │   Class: "${iframe.className}"`);
+        log(`      │   Title: "${iframe.title}"`);
+        log(`      │`);
+        log(`      ├─ PROPERTIES`);
+        log(`      │   Visibility: ${visibility}`);
+        log(`      │   Size: ${sizeStr}`);
+        log(`      │   Src: "${iframe.src}"`);
+        log(`      │   Role: "${iframe.role}"`);
+        log(`      │   Sandbox: "${iframe.sandbox}"`);
+        if (iframe.ariaLabel)
+            log(`      │   AriaLabel: "${iframe.ariaLabel}"`);
+        if (Object.keys(iframe.dataAttributes).length > 0) {
+            log(`      │   Data Attributes: ${JSON.stringify(iframe.dataAttributes)}`);
+        }
+        log(`      │`);
+        log(`      └─ SELECTOR REFERENCE`);
+        log(`         iframe#${iframe.id}`);
+        log(`         iframe[name="${iframe.name}"]`);
+        log(`         iframe[data-name="${iframe.name}"]`);
+        idx++;
+    });
+    log(`\n   ✅ Total: ${iframes.size} iframe(s)\n`);
+}
+/**
+ * DETECT NEW IFRAMES - Compare current iframes with previous state, identify newly opened ones
+ * Also tracks creation timestamps and updates latestIframe pointer
+ */
+async function detectNewIframes(page, windowPath = 'MAIN_PAGE') {
+    const currentIframes = await detectAllIframes(page, windowPath);
+    const newIframes = new Map();
+    const now = Date.now();
+    let newestIframe = null;
+    let newestTime = 0;
+    // Find iframes that weren't in the previous snapshot
+    currentIframes.forEach((iframe, key) => {
+        const wasSeenBefore = iframeSnapshotBefore.has(key);
+        if (!wasSeenBefore) {
+            // NEW iframe detected
+            newIframes.set(key, iframe);
+            // Track creation time for this iframe
+            if (!iframeCreationTimestamps.has(iframe.id)) {
+                iframeCreationTimestamps.set(iframe.id, now);
+            }
+            // Check if this is the newest
+            if (!newestIframe || now > newestTime) {
+                newestIframe = {
+                    id: iframe.id,
+                    name: iframe.name,
+                    detectedAt: now,
+                    isVisible: iframe.isVisible
+                };
+                newestTime = now;
+            }
+            log(`   🔔 [NEW IFRAME DETECTED] "${iframe.id}" (name: "${iframe.name}") | Visible: ${iframe.isVisible ? '✅' : '⚠️ HIDDEN'}`);
+        }
+        else {
+            // Existing iframe - check if it's newer than current latest
+            const createdAt = iframeCreationTimestamps.get(iframe.id) || 0;
+            if (createdAt > newestTime && iframe.isVisible) {
+                newestIframe = {
+                    id: iframe.id,
+                    name: iframe.name,
+                    detectedAt: createdAt,
+                    isVisible: iframe.isVisible
+                };
+                newestTime = createdAt;
+            }
+        }
+    });
+    // Update global latestIframe pointer if we found any new ones
+    if (newestIframe) {
+        latestIframe = newestIframe;
+        log(`   ⭐ [LATEST IFRAME] Now prioritizing: "${newestIframe.id}" (opened ${new Date(newestIframe.detectedAt).toLocaleTimeString()})`);
+    }
+    // Update snapshot for next detection
+    iframeSnapshotBefore = new Map(currentIframes);
+    return newIframes;
+}
+/**
+ * GET IFRAMES SORTED BY RECENCY - Returns iframes ordered by creation time (newest first)
+ */
+function getIframesSortedByRecency(iframes) {
+    return Array.from(iframes.values()).sort((a, b) => {
+        const timeA = iframeCreationTimestamps.get(a.id) || 0;
+        const timeB = iframeCreationTimestamps.get(b.id) || 0;
+        // Newest first (higher timestamp = newer)
+        if (timeB !== timeA)
+            return timeB - timeA;
+        // If same age, visible ones first
+        if (a.isVisible !== b.isVisible)
+            return a.isVisible ? -1 : 1;
+        return 0;
+    });
+}
+/**
+ * ACCESS ELEMENT IN IFRAME - Universal method to search and interact with elements in any iframe
+ */
+async function accessElementInIframe(page, iframeIdentifier, // Can be iframe ID, name, or selector
+targetElement, // Element text/selector to find
+action, fillValue) {
+    try {
+        log(`   🔍 [IFRAME ACCESS] Searching for "${targetElement}" in iframe: "${iframeIdentifier}" | Action: ${action}`);
+        // Build iframe selector (try multiple patterns)
+        const iframeSelectors = [
+            `iframe#${iframeIdentifier}`,
+            `iframe[name="${iframeIdentifier}"]`,
+            `iframe[data-name="${iframeIdentifier}"]`,
+            `iframe[aria-label="${iframeIdentifier}"]`,
+            iframeIdentifier // Assume it's already a selector
+        ];
+        let iframeLocator = null;
+        let usedSelector = '';
+        for (const selector of iframeSelectors) {
+            try {
+                const locator = page.frameLocator(selector);
+                const isAccessible = await locator.locator('body').isVisible().catch(() => false);
+                if (isAccessible) {
+                    iframeLocator = locator;
+                    usedSelector = selector;
+                    log(`   ✅ [IFRAME FOUND] Using selector: "${selector}"`);
+                    break;
+                }
+            }
+            catch (e) {
+                // Try next selector
+            }
+        }
+        if (!iframeLocator) {
+            log(`   ❌ [IFRAME NOT FOUND] Could not access iframe: "${iframeIdentifier}"`);
+            return { success: false, foundIn: 'NONE', elementInfo: {} };
+        }
+        // Now search for the element inside the iframe
+        log(`   🔎 Searching within iframe for: "${targetElement}"`);
+        const elementSearchResult = await iframeLocator.evaluate((searchText) => {
+            const allElements = document.querySelectorAll('*');
+            const searchLower = searchText.toLowerCase().trim();
+            const matches = [];
+            Array.from(allElements).forEach((el) => {
+                const text = (el.textContent || '').trim().toLowerCase();
+                const directText = Array.from(el.childNodes)
+                    .filter(n => n.nodeType === 3)
+                    .map(n => (n.textContent || '').trim().toLowerCase())
+                    .join(' ');
+                // Exact match (priority)
+                if (text === searchLower || directText === searchLower) {
+                    const style = window.getComputedStyle(el);
+                    if (style.display !== 'none' && style.visibility !== 'hidden') {
+                        const rect = el.getBoundingClientRect();
+                        matches.push({
+                            type: 'EXACT',
+                            tag: el.tagName,
+                            id: el.id,
+                            class: el.className,
+                            text: text.substring(0, 100),
+                            visible: true,
+                            position: { x: Math.round(rect.x), y: Math.round(rect.y) }
+                        });
+                    }
+                }
+                // Substring match (fallback)
+                else if (text.includes(searchLower) || directText.includes(searchLower)) {
+                    const style = window.getComputedStyle(el);
+                    if (style.display !== 'none' && style.visibility !== 'hidden') {
+                        const rect = el.getBoundingClientRect();
+                        matches.push({
+                            type: 'PARTIAL',
+                            tag: el.tagName,
+                            id: el.id,
+                            class: el.className,
+                            text: text.substring(0, 100),
+                            visible: true,
+                            position: { x: Math.round(rect.x), y: Math.round(rect.y) }
+                        });
+                    }
+                }
+            });
+            return matches;
+        }, targetElement).catch(() => []);
+        if (elementSearchResult.length === 0) {
+            log(`   ⚠️  [ELEMENT NOT FOUND] Could not find "${targetElement}" in iframe`);
+            return { success: false, foundIn: iframeIdentifier, elementInfo: {} };
+        }
+        log(`   ✅ [ELEMENT FOUND] Found ${elementSearchResult.length} match(es) in iframe`);
+        const bestMatch = elementSearchResult[0]; // Use first (exact) match
+        log(`      Type: ${bestMatch.type} | Tag: <${bestMatch.tag}> | ID: ${bestMatch.id || 'N/A'} | Class: ${bestMatch.class}`);
+        // Perform action
+        if (action === 'click') {
+            try {
+                // Try clicking by selector first
+                const clickLocator = iframeLocator.locator(`[id="${bestMatch.id}"]`).first();
+                const isVisible = await clickLocator.isVisible().catch(() => false);
+                if (isVisible) {
+                    await clickLocator.click({ timeout: 3000, force: true });
+                    log(`   ✅ [ELEMENT CLICKED] Successfully clicked in iframe`);
+                    return { success: true, foundIn: iframeIdentifier, elementInfo: bestMatch };
+                }
+                else {
+                    log(`   ⚠️  [ELEMENT NOT VISIBLE] Element found but not visible`);
+                    return { success: false, foundIn: iframeIdentifier, elementInfo: bestMatch };
+                }
+            }
+            catch (clickErr) {
+                log(`   ⚠️  [CLICK FAILED] ${clickErr.message}`);
+                return { success: false, foundIn: iframeIdentifier, elementInfo: bestMatch };
+            }
+        }
+        else if (action === 'fill' && fillValue) {
+            try {
+                const fillLocator = iframeLocator.locator(`[id="${bestMatch.id}"]`).first();
+                await fillLocator.fill(fillValue, { timeout: 3000 });
+                log(`   ✅ [ELEMENT FILLED] Filled with: "${fillValue}"`);
+                return { success: true, foundIn: iframeIdentifier, elementInfo: bestMatch };
+            }
+            catch (fillErr) {
+                log(`   ⚠️  [FILL FAILED] ${fillErr.message}`);
+                return { success: false, foundIn: iframeIdentifier, elementInfo: bestMatch };
+            }
+        }
+        else if (action === 'read') {
+            log(`   ✅ [ELEMENT READ] Found element: ${bestMatch.text}`);
+            return { success: true, foundIn: iframeIdentifier, elementInfo: bestMatch };
+        }
+        return { success: false, foundIn: iframeIdentifier, elementInfo: bestMatch };
+    }
+    catch (error) {
+        log(`   ❌ [IFRAME ACCESS ERROR] ${error.message}`);
+        return { success: false, foundIn: 'ERROR', elementInfo: {} };
+    }
+}
+/**
+ * SEARCH IN ALL DETECTED IFRAMES - Universal search across ALL iframes, PRIORITIZING LATEST/NEWEST
+ */
+async function searchInAllDetectedIframes(page, targetElement, action, fillValue) {
+    try {
+        log(`\n   🌐 [UNIVERSAL IFRAME SEARCH] Looking for "${targetElement}" in ALL iframes on page...`);
+        // CRITICAL: Check for NEW iframes FIRST before searching
+        const newIframes = await detectNewIframes(page);
+        // Get all current iframes
+        const allIframes = await detectAllIframes(page);
+        if (allIframes.size === 0) {
+            log(`   ℹ️  No iframes on page`);
+            return false;
+        }
+        // PRIORITY ORDER:
+        // 1. Latest/newest iframe (if it exists and is visible)
+        // 2. Then other iframes sorted by recency (newest to oldest)
+        // 3. Visible ones first, then hidden ones
+        log(`\n   📊 [IFRAME PRIORITY] Detected ${allIframes.size} total iframe(s)`);
+        if (latestIframe) {
+            log(`   ⭐ [LATEST IFRAME] Will search this first: "${latestIframe.id}"`);
+        }
+        // Sort iframes by recency (newest first)
+        const iframesByRecency = getIframesSortedByRecency(allIframes);
+        log(`\n   🔍 [SEARCH ORDER] Iframes will be checked in this priority:\n`);
+        iframesByRecency.forEach((iframe, idx) => {
+            const isLatest = latestIframe && latestIframe.id === iframe.id ? ' ⭐ [LATEST]' : '';
+            const visibility = iframe.isVisible ? '✅ VISIBLE' : '⚠️ HIDDEN';
+            log(`      [${idx + 1}] "${iframe.id}" (${visibility})${isLatest}`);
+        });
+        log(`\n`);
+        // Search in priority order
+        for (const iframe of iframesByRecency) {
+            log(`\n   📍 [CHECKING] Iframe: "${iframe.id}" (${iframe.isVisible ? 'VISIBLE' : 'HIDDEN'})...`);
+            // Add extra emphasis for latest iframe
+            if (latestIframe && latestIframe.id === iframe.id) {
+                log(`      ⭐ This is the LATEST/NEWEST iframe - PRIORITY SEARCH`);
+            }
+            const result = await accessElementInIframe(page, iframe.id, targetElement, action, fillValue);
+            if (result.success) {
+                const priority = (latestIframe && latestIframe.id === iframe.id)
+                    ? '⭐ [LATEST IFRAME]'
+                    : '[FALLBACK IFRAME]';
+                log(`\n   🎉 [SUCCESS] ${priority} Operation completed in: "${iframe.id}"`);
+                return true;
+            }
+        }
+        log(`\n   ❌ [UNIVERSAL SEARCH FAILED] Target "${targetElement}" not found in ANY iframe`);
+        return false;
+    }
+    catch (error) {
+        log(`   ❌ [UNIVERSAL SEARCH ERROR] ${error.message}`);
+        return false;
+    }
+}
+/**
+ * MONITOR IFRAME CHANGES - Call this after each step to detect new iframes and log changes
+ */
+async function monitorIframeChanges(page) {
+    try {
+        const newIframes = await detectNewIframes(page, 'MAIN_PAGE');
+        const allCurrentIframes = await detectAllIframes(page, 'MAIN_PAGE');
+        if (newIframes.size > 0) {
+            log(`\n   🆕 [IFRAME MONITOR] ${newIframes.size} NEW IFRAME(S) DETECTED!`);
+            logIframeMetadata(newIframes, true);
+            // Update global state with new iframe info
+            newIframes.forEach((iframe, key) => {
+                allDetectedIframes.set(key, iframe);
+                latestDetectedNewFrame = {
+                    name: iframe.name || iframe.id,
+                    id: iframe.id,
+                    title: iframe.title || 'Unnamed',
+                    detectedAt: Date.now()
+                };
+                log(`\n   📌 [IFRAME ENTRY] New iframe is now available for element access:`);
+                log(`      If you need to access elements in this iframe, use:`);
+                log(`      - accessElementInIframe(page, "${iframe.id}", "element_text", "click")`);
+                log(`      - Or the universal search will find it automatically\n`);
+            });
+        }
+        return {
+            newIframes: newIframes,
+            totalIframes: allCurrentIframes.size
+        };
+    }
+    catch (error) {
+        log(`   ⚠️  [IFRAME MONITOR] Error: ${error.message}`);
+        return { newIframes: new Map(), totalIframes: 0 };
+    }
+}
 /**
  * DETECT VISIBLE MODALS - Check for modal/dialog overlays that should be priority
  */
@@ -1126,6 +1534,8 @@ async function detectAndLogAllIframes() {
     if (!state.page || state.page.isClosed())
         return;
     try {
+        // 🎯 CRITICAL: First, check for NEW/LATEST iframes and update latestIframe pointer
+        const newIframeDetection = await detectNewIframes(state.page, 'MAIN_PAGE');
         // Get all frames using Playwright's API (includes nested frames)
         const allFrames = state.page.frames();
         log(`\n🔍 [FRAME DETECTION] Total frames via Playwright: ${allFrames.length}`);
@@ -1204,7 +1614,8 @@ async function detectAndLogAllIframes() {
         log(`\n📋 ALL IFRAMES ON PAGE (including nested):`);
         totalIframes.forEach((frameInfo, idx) => {
             const isNew = newFrames.some(f => (f.name || f.id) === (frameInfo.name || frameInfo.id));
-            const status = isNew ? ' 🆕 [NEW]' : '';
+            const isLatest = latestIframe && latestIframe.id === frameInfo.id ? ' ⭐ [LATEST]' : '';
+            const status = isNew ? ' 🆕 [NEW]' : isLatest ? isLatest : '';
             let displayName = frameInfo.name || frameInfo.id || `iframe_${frameInfo.index || idx}`;
             log(`   [${idx + 1}] Name: "${displayName}"${status}`);
             log(`       ├─ ID: "${frameInfo.id}"`);
@@ -1214,8 +1625,16 @@ async function detectAndLogAllIframes() {
             log(`       ├─ Visible: ${frameInfo.visible ? '✅ YES' : '❌ NO'}`);
             log(`       └─ Size: ${frameInfo.width}x${frameInfo.height}px`);
         });
+        // Show priority iframe for next operation
+        if (latestIframe) {
+            log(`\n⭐ [IFRAME PRIORITY] Latest iframe (will be checked FIRST):`);
+            log(`   ID: "${latestIframe.id}"`);
+            log(`   Name: "${latestIframe.name}"`);
+            log(`   Visible: ${latestIframe.isVisible ? '✅ YES' : '❌ NO'}`);
+            log(`   Detected: ${new Date(latestIframe.detectedAt).toLocaleTimeString()}`);
+        }
         if (newFrames.length > 0) {
-            log(`\n⭐ ATTENTION: ${newFrames.length} NEW iframe(s) detected!`);
+            log(`\n✅ ATTENTION: ${newFrames.length} NEW iframe(s) detected!`);
             log(`🎯 [SEARCH PRIORITY] Will search NEW iframes FIRST in next action`);
             log(`🎯 [TARGET IFRAME] Latest new frame: "${latestDetectedNewFrame?.name || latestDetectedNewFrame?.id}"`);
         }
@@ -6661,40 +7080,25 @@ async function clickWithRetry(target, maxRetries = 5) {
             log(`      └─ Target Item: "${actualTarget}"`);
         }
     }
-    // ===== SPECIAL HANDLING FOR OK BUTTON: Direct ifrSubScreen search =====
-    // The Ok button is typically in the Account Number Generation dialog (ifrSubScreen)
-    if (actualTarget.trim().toLowerCase() === 'ok') {
-        log(`   🔴 [OK-BUTTON-SPECIAL-HANDLER] Searching for Ok button with PRIORITY targeting ifrSubScreen`);
-        // Try direct ifrSubScreen access first
-        try {
-            const ifrSubScreenLocator = state.page?.frameLocator('iframe[id="ifrSubScreen"]');
-            if (ifrSubScreenLocator) {
-                log(`   📍 Found ifrSubScreen iframe - searching for Ok button inside it`);
-                // Look for Ok button with various selectors in ifrSubScreen
-                const okButton = ifrSubScreenLocator.locator('input[id="BTN_OK"], input[name="BTN_OK"], button[name="BTN_OK"], input[value="OK"]').first();
-                const isVisible = await okButton.isVisible().catch(() => false);
-                if (isVisible) {
-                    log(`   ✅ [OK-BUTTON-DIRECT] Found Ok button in ifrSubScreen!`);
-                    await okButton.click({ timeout: 3000, force: true });
-                    log(`   ✅ [OK-BUTTON-DIRECT] Successfully clicked!`);
-                    return true;
-                }
-                else {
-                    log(`   ⚠️  [OK-BUTTON-DIRECT] Ok button not visible in ifrSubScreen`);
-                }
+    // ===== UNIVERSAL IFRAME SEARCH: Auto-detect and search in ALL iframes (not hardcoded) =====
+    // This handles ANY iframe dynamically - Account Number Generation dialog or any other modal iframe
+    if (actualTarget.trim().toLowerCase() === 'ok' || actualTarget.trim().toLowerCase() === 'submit' || actualTarget.trim().toLowerCase() === 'confirm') {
+        log(`\n   🚀 [UNIVERSAL IFRAME HANDLER] Searching for "${actualTarget}" in ALL detected iframes...`);
+        // Detect all iframes and log metadata
+        const detectedIframes = await detectAllIframes(state.page);
+        if (detectedIframes.size > 0) {
+            logIframeMetadata(detectedIframes, false);
+            // Try searching in all detected iframes
+            const iframeSearchSuccess = await searchInAllDetectedIframes(state.page, actualTarget, 'click');
+            if (iframeSearchSuccess) {
+                log(`   ✅ [UNIVERSAL IFRAME] Successfully found and clicked "${actualTarget}" in an iframe!`);
+                return true;
             }
+            log(`   ⚠️  [UNIVERSAL IFRAME] Not found in any iframe, falling back to main page search...`);
         }
-        catch (e) {
-            log(`   ⚠️  [OK-BUTTON-DIRECT] Error accessing ifrSubScreen: ${e.message}`);
+        else {
+            log(`   ℹ️  No iframes detected on this page`);
         }
-        // Fallback: Use PRIORITY 0 search for Ok button
-        log(`   📍 Falling back to PRIORITY 0 search for Ok button`);
-        const okFoundWithPriority = await searchInAllSubwindows(actualTarget, 'click');
-        if (okFoundWithPriority) {
-            log(`   ✅ [OK-BUTTON-PRIORITY-0] Successfully clicked Ok in prioritized iframe!`);
-            return true;
-        }
-        log(`   ⚠️  [OK-BUTTON-PRIORITY-0] Not found in prioritized search, trying general search...`);
     }
     // ===== SIMPLE DIRECT SEARCH: No dropdown logic, just find and click =====
     log(`   ⚡ Attempting to find and click element...`);
@@ -9353,6 +9757,18 @@ async function executeStep(stepData) {
     }
     catch (e) {
         log(`Capture failed`);
+    }
+    // Monitor for new iframes after step execution
+    try {
+        if (state.page && !state.page.isClosed()) {
+            const iframeStatus = await monitorIframeChanges(state.page);
+            if (iframeStatus.newIframes.size > 0) {
+                log(`   📊 [STEP ${stepId}] Iframe status: ${iframeStatus.totalIframes} total iframe(s) on page`);
+            }
+        }
+    }
+    catch (monitorErr) {
+        // Silent fail - don't break step execution
     }
     return result;
 }
